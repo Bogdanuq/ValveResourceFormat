@@ -30,7 +30,7 @@ namespace GUI.Types.GLViewers
         private readonly List<AnimationListEntry> animationIndexMap = [];
 
         /// <summary>What an animation dropdown entry plays: a clip by name, a graph by index, or neither.</summary>
-        private readonly record struct AnimationListEntry(string? Animation, int GraphIndex = -1);
+        private readonly record struct AnimationListEntry(string? Animation, int? GraphIndex = null);
 
         public ComboBox? animationComboBox { get; protected set; }
         protected CheckBox? animationPlayPause;
@@ -136,13 +136,8 @@ namespace GUI.Types.GLViewers
                 Debug.Assert(modelSceneNode != null);
 
                 var entry = animationIndexMap.Count > i ? animationIndexMap[i] : default;
-                var session = entry.GraphIndex >= 0 ? graphSessions[entry.GraphIndex] : null;
-                var graph = session != null ? LoadGraph(session) : null;
-
-                if (session != null && graph != null)
-                {
-                    EnsureGraphControls(session);
-                }
+                var session = entry.GraphIndex is int graphIndex ? graphSessions[graphIndex] : null;
+                var graph = session?.Graph;
 
                 using (var lockedGL = MakeCurrent())
                 {
@@ -261,6 +256,11 @@ namespace GUI.Types.GLViewers
 
                 graphControlsHost = host;
                 UiControl.AddControl(host);
+
+                foreach (var session in graphSessions)
+                {
+                    BuildGraphControls(session);
+                }
             }
         }
 
@@ -297,17 +297,15 @@ namespace GUI.Types.GLViewers
 
                 if (ModelViewerWithAnimGraphSupport)
                 {
+                    // Models list their default graph again under its own identifier, so each graph is offered once.
+                    // Graphs load here with the model, from the clips it already loaded, so picking one loads nothing.
                     graphSessions = [.. model.AnimGraph2References
                         .Where(static reference => !string.IsNullOrEmpty(reference.GraphPath))
-                        .Select(static reference => new GraphSession(reference.Identifier, reference.GraphPath))];
-
-                    // Play the first graph, the model's default
-                    if (graphSessions.Length > 0 && LoadGraph(graphSessions[0]) is { } graph)
-                    {
-                        activeGraphSession = graphSessions[0];
-                        animGraph = graph;
-                        modelSceneNode.SetAnimationGraph(graph);
-                    }
+                        .GroupBy(static reference => reference.GraphPath, StringComparer.OrdinalIgnoreCase)
+                        .Select(group => LoadGraphSession(
+                            group.Select(static reference => reference.Identifier).FirstOrDefault(static identifier => !string.IsNullOrEmpty(identifier)) ?? string.Empty,
+                            group.Key))
+                        .OfType<GraphSession>()];
                 }
 
                 animationController = modelSceneNode.AnimationController;
@@ -421,17 +419,6 @@ namespace GUI.Types.GLViewers
                     AddAnimationControls();
                     SetAvailableAnimations(animations);
                     SetAnimationControllerUpdateHandler();
-                }
-
-                if (graphSessions.Length > 0)
-                {
-                    if (activeGraphSession != null)
-                    {
-                        EnsureGraphControls(activeGraphSession);
-                        graphGizmoBindings = activeGraphSession.GizmoBindings;
-                    }
-
-                    ShowGraphControls(activeGraphSession);
                 }
 
                 if (model.Skeleton.Bones.Length > 0)
@@ -630,47 +617,33 @@ namespace GUI.Types.GLViewers
             base.AddUiControls();
         }
 
-        /// <summary>One of the model's animation graphs, loaded and given controls the first time it is picked.</summary>
-        private sealed class GraphSession(string identifier, string path)
+        /// <summary>One of the model's animation graphs, with the parameter controls built for it.</summary>
+        private sealed class GraphSession(string displayName, AnimationGraph graph)
         {
-            public string DisplayName { get; } = string.IsNullOrEmpty(identifier) ? System.IO.Path.GetFileNameWithoutExtension(path) : identifier;
-            public string Path { get; } = path;
-            public AnimationGraph? Graph { get; set; }
-            public bool LoadFailed { get; set; }
+            public string DisplayName { get; } = displayName;
+            public AnimationGraph Graph { get; } = graph;
             public Panel? Controls { get; set; }
             public List<GraphGizmoBinding> GizmoBindings { get; } = [];
         }
 
-        private AnimationGraph? LoadGraph(GraphSession session)
+        private GraphSession? LoadGraphSession(string identifier, string path)
         {
-            if (session.Graph != null || session.LoadFailed)
+            Debug.Assert(modelSceneNode != null);
+
+            if (modelSceneNode.LoadAnimationGraph(path) is not { } graph)
             {
-                return session.Graph;
+                Log.Warn(nameof(GLModelViewer), $"Failed to load animation graph {path}");
+                return null;
             }
 
-            if (Scene.RendererContext.FileLoader.LoadFileCompiled(session.Path)?.DataBlock is NmGraphDefinition graphDefinition)
-            {
-                session.Graph = new AnimationGraph(graphDefinition, Scene.RendererContext.FileLoader);
-            }
-            else
-            {
-                session.LoadFailed = true;
-                Log.Warn(nameof(GLModelViewer), $"Failed to load animation graph {session.Path}");
-            }
+            ApplyStartingParameters(graph);
 
-            return session.Graph;
+            var displayName = string.IsNullOrEmpty(identifier) ? Path.GetFileNameWithoutExtension(path) : identifier;
+            return new GraphSession(displayName, graph);
         }
 
-        private void EnsureGraphControls(GraphSession session)
+        private void BuildGraphControls(GraphSession session)
         {
-            Debug.Assert(UiControl != null);
-            Debug.Assert(session.Graph != null);
-
-            if (session.Controls != null)
-            {
-                return;
-            }
-
             Debug.Assert(graphControlsHost != null);
 
             var controls = CreateAnimGraphControls(session.Graph, session.GizmoBindings);
@@ -746,6 +719,41 @@ namespace GUI.Types.GLViewers
             return (slider, [field]);
         }
 
+        // Starts the unset IDs the game always sets, so a picked graph shows a standing character rather than
+        // nothing: an idle state or action, ground movement, and a direction
+        private static void ApplyStartingParameters(AnimationGraph graph)
+        {
+            foreach (var paramName in graph.IdParameters.Keys.ToArray())
+            {
+                if (graph.IdParameters[paramName].Length == 0 && GuessStartingId(paramName, [.. graph.GetParameterIdOptions(paramName)]) is { } id)
+                {
+                    graph.IdParameters[paramName] = id;
+                }
+            }
+        }
+
+        private static string? GuessStartingId(string paramName, string[] options)
+        {
+            var idle = Array.Find(options, static option => option == "idle" || option.EndsWith("_idle", StringComparison.Ordinal));
+            if (idle != null)
+            {
+                return idle;
+            }
+
+            if (paramName.Contains("type", StringComparison.OrdinalIgnoreCase))
+            {
+                return Array.Find(options, static option => option.EndsWith("_ground", StringComparison.Ordinal))
+                    ?? Array.Find(options, static option => option == "default");
+            }
+
+            if (paramName.Contains("direction", StringComparison.OrdinalIgnoreCase))
+            {
+                return Array.Find(options, static option => option == "W");
+            }
+
+            return null;
+        }
+
         // For parameters only read by code the graph does not describe, such as aim nodes
         private static FloatParameterRange? GuessFloatParameterRange(string paramName)
         {
@@ -791,13 +799,26 @@ namespace GUI.Types.GLViewers
             static IOrderedEnumerable<string> Sorted<T>(Dictionary<string, T> parameters)
                 => parameters.Keys.Order(StringComparer.OrdinalIgnoreCase);
 
+            Add(RendererControl.CreateCheckBox("Show timings and sampled clips", graph.RecordUpdateDetails, isChecked =>
+            {
+                graph.RecordUpdateDetails = isChecked;
+            }));
+
             AddSection("Flags", graph.BoolParameters.Count);
 
             foreach (var paramName in Sorted(graph.BoolParameters))
             {
-                Add(RendererControl.CreateCheckBoxRow(
-                    RendererControl.CreateRowCheckBox(graph.BoolParameters[paramName], isChecked => graph.BoolParameters[paramName] = isChecked, paramName),
-                    RendererControl.CreateRowButton("Signal", () => graph.SignalBoolParameter(paramName))));
+                // A held value is already true, so a pulse could not change it
+                var signalButton = RendererControl.CreateRowButton("Signal", () => graph.SignalBoolParameter(paramName));
+                signalButton.Enabled = !graph.BoolParameters[paramName];
+
+                var checkBox = RendererControl.CreateRowCheckBox(graph.BoolParameters[paramName], isChecked =>
+                {
+                    graph.BoolParameters[paramName] = isChecked;
+                    signalButton.Enabled = !isChecked;
+                }, paramName);
+
+                Add(RendererControl.CreateCheckBoxRow(checkBox, signalButton));
             }
 
             AddSection("Values", graph.FloatParameters.Count);
@@ -916,8 +937,56 @@ namespace GUI.Types.GLViewers
             base.OnMouseUp(sender, e);
         }
 
+        private const string Spaces = "                    ";
+
+        // Lines of the sampled clip overlay, rebuilt every frame
+        private readonly ValveResourceFormat.Renderer.TextRenderer.TextArena sampledClipsText = new(16384);
+
+        private void DrawSampledClips()
+        {
+            if (animGraph is not { RecordUpdateDetails: true } graph)
+            {
+                return;
+            }
+
+            sampledClipsText.Clear();
+            var y = 36f;
+
+            void AddLine(ValveResourceFormat.Renderer.TextRenderer.TextMemory text, Color32 color)
+            {
+                TextRenderer.AddText(new ValveResourceFormat.Renderer.TextRenderer.TextRenderRequest
+                {
+                    X = 12f,
+                    Y = y,
+                    Scale = 14f,
+                    Color = color,
+                    Text = text,
+                });
+
+                y += 16f;
+            }
+
+            AddLine("AnimGraph2", Color32.White);
+
+            // Inclusive times of the graph and the graphs it references, indented by depth
+            foreach (var timing in graph.GraphTimings)
+            {
+                var indent = Spaces.AsSpan(0, Math.Min(timing.Depth * 2, Spaces.Length));
+                AddLine(sampledClipsText.Format($"{indent}{timing.GraphName,-48} {timing.Duration.TotalMicroseconds,8:0.0} us"), Color32.White);
+            }
+
+            y += 8f;
+
+            foreach (var clip in graph.SampledClips)
+            {
+                AddLine(sampledClipsText.Format($"{clip.Name,-80} {clip.Time,6:0.00} / {clip.Duration:0.00}"), Color32.White);
+            }
+        }
+
         protected override void RenderOverlayLines(Scene.RenderContext renderContext)
         {
+            DrawSampledClips();
+
             if (animGraph == null || modelSceneNode == null || graphGizmoBindings.Count == 0)
             {
                 return;
@@ -1496,8 +1565,6 @@ namespace GUI.Types.GLViewers
                 animationComboBox.Items.Add(animations.Length > 0 ? $"({animations.Length} animations available)" : "(bind pose)");
                 animationIndexMap.Add(default);
 
-                var selectedIndex = 0;
-
                 if (graphSessions.Length > 0)
                 {
                     animationComboBox.Items.Add(new ThemedComboBoxItem
@@ -1509,11 +1576,6 @@ namespace GUI.Types.GLViewers
 
                     for (var i = 0; i < graphSessions.Length; i++)
                     {
-                        if (graphSessions[i] == activeGraphSession)
-                        {
-                            selectedIndex = animationComboBox.Items.Count;
-                        }
-
                         animationComboBox.Items.Add(new ThemedComboBoxItem
                         {
                             Text = graphSessions[i].DisplayName,
@@ -1599,7 +1661,7 @@ namespace GUI.Types.GLViewers
                 }
 
                 animationComboBoxCurrentIndex = -10;
-                animationComboBox.SelectedIndex = selectedIndex;
+                animationComboBox.SelectedIndex = 0;
             }
             else
             {
