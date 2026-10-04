@@ -6,18 +6,12 @@ namespace ValveResourceFormat.Renderer.AnimGraphNodes;
 
 // Snaps the weapon so its right hand attachment sits on the right hand, then reaches the left hand
 // onto the weapon's left hand attachment with two bone IK.
-sealed class SnapWeaponNode : PassthroughNode
+[KV3Transfer]
+sealed partial class SnapWeaponNode : PassthroughNode
 {
-    public short FlashedAmountNodeIdx { get; }
-    public short WeaponCategoryNodeIdx { get; }
-    public short WeaponTypeNodeIdx { get; }
-
-    public SnapWeaponNode(KVObject data) : base(data)
-    {
-        FlashedAmountNodeIdx = data.GetInt16Property("m_nFlashedAmountNodeIdx");
-        WeaponCategoryNodeIdx = data.GetInt16Property("m_nWeaponCategoryNodeIdx");
-        WeaponTypeNodeIdx = data.GetInt16Property("m_nWeaponTypeNodeIdx");
-    }
+    public short FlashedAmountNodeIdx { get; } = -1;
+    public short WeaponCategoryNodeIdx { get; } = -1;
+    public short WeaponTypeNodeIdx { get; } = -1;
 
     static readonly GlobalSymbol DisableLeftHandIK = new("WPN_DISABLE_LEFT_HAND_IK");
     static readonly GlobalSymbol DisableHandIK = new("WPN_DISABLE_HAND_IK");

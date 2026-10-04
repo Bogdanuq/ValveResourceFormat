@@ -5,34 +5,20 @@ namespace ValveResourceFormat.Renderer.AnimGraphNodes;
 
 // CS2 third person aiming: spreads the aim yaw and pitch over the spine, places the weapon per
 // weapon category, and solves both hands onto it.
-sealed class AimCSNode : PassthroughNode
+[KV3Transfer]
+sealed partial class AimCSNode : PassthroughNode
 {
-    public short VerticalAngleNodeIdx { get; }
-    public short HorizontalAngleNodeIdx { get; }
-    public short WeaponCategoryNodeIdx { get; }
-    public short WeaponTypeNodeIdx { get; }
-    public short WeaponActionNodeIdx { get; }
-    public short WeaponDropNodeIdx { get; }
-    public short IsDefusingNodeIdx { get; }
-    public short CrouchWeightNodeIdx { get; }
+    public short VerticalAngleNodeIdx { get; } = -1;
+    public short HorizontalAngleNodeIdx { get; } = -1;
+    public short WeaponCategoryNodeIdx { get; } = -1;
+    public short WeaponTypeNodeIdx { get; } = -1;
+    public short WeaponActionNodeIdx { get; } = -1;
+    public short WeaponDropNodeIdx { get; } = -1;
+    public short IsDefusingNodeIdx { get; } = -1;
+    public short CrouchWeightNodeIdx { get; } = -1;
     public float HandIKBlendInTimeSeconds { get; }
     public float ActionBlendTimeSeconds { get; }
     public float PlantingBlendTimeSeconds { get; }
-
-    public AimCSNode(KVObject data) : base(data)
-    {
-        VerticalAngleNodeIdx = data.GetInt16Property("m_nVerticalAngleNodeIdx");
-        HorizontalAngleNodeIdx = data.GetInt16Property("m_nHorizontalAngleNodeIdx");
-        WeaponCategoryNodeIdx = data.GetInt16Property("m_nWeaponCategoryNodeIdx");
-        WeaponTypeNodeIdx = data.GetInt16Property("m_nWeaponTypeNodeIdx");
-        WeaponActionNodeIdx = data.GetInt16Property("m_nWeaponActionNodeIdx");
-        WeaponDropNodeIdx = data.GetInt16Property("m_nWeaponDropNodeIdx");
-        IsDefusingNodeIdx = data.GetInt16Property("m_nIsDefusingNodeIdx");
-        CrouchWeightNodeIdx = data.GetInt16Property("m_nCrouchWeightNodeIdx");
-        HandIKBlendInTimeSeconds = data.GetFloatProperty("m_flHandIKBlendInTimeSeconds");
-        ActionBlendTimeSeconds = data.GetFloatProperty("m_flActionBlendTimeSeconds");
-        PlantingBlendTimeSeconds = data.GetFloatProperty("m_flPlantingBlendTimeSeconds");
-    }
 
     static readonly GlobalSymbol ActionEnding = new("WPN_IK_ACTION_ENDING");
     static readonly GlobalSymbol DisableHandIK = new("WPN_DISABLE_HAND_IK");
@@ -151,8 +137,6 @@ sealed class AimCSNode : PassthroughNode
         return weaponCategory.IsValid && weaponType.IsValid;
     }
 
-    static float NormalizeDegrees180(float angle) => angle - (MathF.Floor((angle / 360f) + 0.5f) * 360f);
-
     public override GraphPoseNodeResult Update(GraphContext ctx, SyncTrackTimeRange? updateRange = null)
     {
         var result = base.Update(ctx, updateRange);
@@ -170,8 +154,8 @@ sealed class AimCSNode : PassthroughNode
         var plantWeight = plantBlend.GetWeight();
         var parameters = new AimCSSolver.Parameters
         {
-            Yaw = Math.Clamp(NormalizeDegrees180((HorizontalAngleNode?.GetValue(ctx) ?? 0f) * plantWeight), -89f, 89f),
-            Pitch = Math.Clamp(NormalizeDegrees180((VerticalAngleNode?.GetValue(ctx) ?? 0f) * plantWeight), -89f, 89f),
+            Yaw = Math.Clamp(ValveMath.AngleNormalize((HorizontalAngleNode?.GetValue(ctx) ?? 0f) * plantWeight), -89f, 89f),
+            Pitch = Math.Clamp(ValveMath.AngleNormalize((VerticalAngleNode?.GetValue(ctx) ?? 0f) * plantWeight), -89f, 89f),
             Crouch = Math.Clamp(CrouchWeightNode?.GetValue(ctx) ?? 0f, 0f, 1f),
             ActionWeight = actionBlend.GetWeight(),
             Drop = Math.Clamp(WeaponDropNode?.GetValue(ctx) ?? 0f, -10f, 10f),

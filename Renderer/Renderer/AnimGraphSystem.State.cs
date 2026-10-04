@@ -279,7 +279,7 @@ namespace ValveResourceFormat.Renderer.AnimLib
             public GraphPoseNodeResult SourceNodeResult = sourceNodeResult;
             public SyncTrackTimeRange? UpdateRange;
             public sbyte SourceTasksStartMarker = -1;
-            public PoseNode SourceNode;
+            public PoseNode? SourceNode;
             public bool IsSourceTransition;
             public bool StartCachingSourcePose;
         };
