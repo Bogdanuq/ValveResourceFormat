@@ -304,8 +304,20 @@ namespace ValveResourceFormat.Renderer.AnimLib
         }
 
         // A referenced graph evaluates within its parent's layer, branch and world
+        /// <summary>What the update records, shared with referenced graphs, or null when not recording.</summary>
+        internal GraphUpdateDetails? UpdateDetails { get; set; }
+
+        /// <summary>How deeply this graph is referenced in the current evaluation.</summary>
+        internal int GraphDepth { get; private set; }
+
+        /// <summary>Records a clip sample when the update is recording them.</summary>
+        internal void RecordClipSample(GraphClip clip, float percentageThrough)
+            => UpdateDetails?.SampledClips.Add(new SampledClip(clip.Animation.Name, percentageThrough * clip.Duration, clip.Duration));
+
         private void TransferContextDataFromParent(GraphContext parent)
         {
+            UpdateDetails = parent.UpdateDetails;
+            GraphDepth = parent.GraphDepth + 1;
             LayerContext = parent.LayerContext;
             IsInLayer = parent.IsInLayer;
             DeltaTime = parent.DeltaTime;
@@ -316,6 +328,8 @@ namespace ValveResourceFormat.Renderer.AnimLib
 
         private void ReleaseParentContextData()
         {
+            UpdateDetails = Graph.UpdateDetails;
+            GraphDepth = 0;
             LayerContext = ownLayerContext;
             IsInLayer = false;
         }

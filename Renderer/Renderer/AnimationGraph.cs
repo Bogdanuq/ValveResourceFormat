@@ -14,7 +14,7 @@ namespace ValveResourceFormat.Renderer
     /// <see cref="AnimationController.SetAnimationGraph"/>, which routes it to the
     /// <see cref="AnimationPlayer"/> of the matching external skeleton.
     /// </summary>
-    public partial class AnimationGraph
+    public partial class AnimationGraph : IAnimationGraph
     {
         /// <summary>Gets the NM skeleton (.vnmskel) this graph animates.</summary>
         public Skeleton Skeleton { get; }
@@ -84,8 +84,8 @@ namespace ValveResourceFormat.Renderer
         /// <summary>The graph evaluation context, exposed for debug tooling and tests.</summary>
         internal AnimLib.GraphContext Context => graphContext;
 
-        // Bool parameters that were signaled as a one-shot and must be reset to false after the next update.
-        private readonly HashSet<string> signaledBoolParameters = [];
+        // Signaled bool parameters and the value each returns to after the next update
+        private readonly Dictionary<string, bool> signaledBoolParameters = [];
         private readonly object signalLock = new();
 
         // A float curve event of one of this graph's clips, parsed at load
@@ -107,12 +107,39 @@ namespace ValveResourceFormat.Renderer
         /// </summary>
         /// <param name="graphDefinition">The graph definition resource data.</param>
         /// <param name="fileLoader">Loader used to resolve the skeleton and clip resources.</param>
+        /// <exception cref="InvalidDataException">A graph of the tree animates a skeleton the loader cannot provide.</exception>
         public AnimationGraph(NmGraphDefinition graphDefinition, IFileLoader fileLoader)
-            : this(graphDefinition, fileLoader, [])
+            : this(graphDefinition, LoadResources(graphDefinition, fileLoader), [])
         {
         }
 
-        private AnimationGraph(NmGraphDefinition graphDefinition, IFileLoader fileLoader, HashSet<string> loadStack)
+        /// <summary>
+        /// Loads the graph like the constructor does, or returns <see langword="null"/> when a graph of the tree
+        /// animates a skeleton the loader cannot provide, as unshipped work in progress graphs do.
+        /// </summary>
+        /// <param name="graphDefinition">The graph definition resource data.</param>
+        /// <param name="fileLoader">Loader used to resolve the skeleton and clip resources.</param>
+        /// <param name="loadedClips">Clips already loaded elsewhere, such as by the model playing the graph, looked up by
+        /// resource name and used instead of reading them again.</param>
+        public static AnimationGraph? TryLoad(NmGraphDefinition graphDefinition, IFileLoader fileLoader, Func<string, ClipAnimation?>? loadedClips = null)
+        {
+            var resources = GraphResources.Load(graphDefinition, fileLoader, loadedClips);
+            return resources.MissingSkeleton == null ? new AnimationGraph(graphDefinition, resources, []) : null;
+        }
+
+        private static GraphResources LoadResources(NmGraphDefinition graphDefinition, IFileLoader fileLoader)
+        {
+            var resources = GraphResources.Load(graphDefinition, fileLoader);
+
+            if (resources.MissingSkeleton != null)
+            {
+                throw new InvalidDataException($"Skeleton file '{resources.MissingSkeleton}' could not be found.");
+            }
+
+            return resources;
+        }
+
+        private AnimationGraph(NmGraphDefinition graphDefinition, GraphResources resources, HashSet<string> loadStack)
         {
             var graph = graphDefinition.Data.Root;
             Debug.Assert(graph != null, "Animation graph definition data is null.");
@@ -120,13 +147,10 @@ namespace ValveResourceFormat.Renderer
             var variationId = graph.GetProperty<string>("m_variationID");
             Name = $"{Path.GetFileNameWithoutExtension(graphDefinition.Resource?.FileName)} ({variationId})";
 
-            // Load the animated skeleton
-            SkeletonName = graph.GetProperty<string>("m_skeleton")
-                ?? throw new InvalidDataException("Animation graph has no skeleton reference.");
-            var res = fileLoader.LoadFileCompiled(SkeletonName) ?? throw new InvalidDataException($"Skeleton file '{SkeletonName}' could not be found.");
-            var skeletonData = ((BinaryKV3)res.DataBlock!).Data.Root;
-            Skeleton = Skeleton.FromSkeletonData(skeletonData);
-            AnimLibSkeleton = new AnimLib.Skeleton(skeletonData);
+            SkeletonName = GraphResources.GetSkeletonName(graph);
+            var skeleton = resources.Skeletons[SkeletonName];
+            Skeleton = skeleton.Skeleton;
+            AnimLibSkeleton = skeleton.AnimLibSkeleton;
 
             ParentSpaceReferencePose = new FrameBone[Skeleton.Bones.Length];
             for (var i = 0; i < Skeleton.Bones.Length; i++)
@@ -136,28 +160,26 @@ namespace ValveResourceFormat.Renderer
 
             CollectParameters(graph);
 
-            // Load all clips and referenced child graphs. Slots must stay index-aligned with m_resources.
-            var resources = graph.GetArray<string>("m_resources") ?? [];
-            DataSlots = new GraphClip?[resources.Length];
-            ChildGraphs = new AnimationGraph?[resources.Length];
+            // Clips and referenced child graphs, slots index-aligned with m_resources
+            var resourceNames = graph.GetArray<string>("m_resources") ?? [];
+            DataSlots = new GraphClip?[resourceNames.Length];
+            ChildGraphs = new AnimationGraph?[resourceNames.Length];
 
             var graphResourceName = graphDefinition.Resource?.FileName ?? Name;
             loadStack.Add(graphResourceName);
 
-            for (var ri = 0; ri < resources.Length; ri++)
+            for (var ri = 0; ri < resourceNames.Length; ri++)
             {
-                var resourceName = resources[ri];
-                var resourceFile = fileLoader.LoadFileCompiled(resourceName);
+                var resourceName = resourceNames[ri];
 
-                if (resourceFile?.ResourceType == ResourceType.NmClip)
+                if (resources.Clips.TryGetValue((resourceName, SkeletonName), out var clip))
                 {
-                    var clipAnim = new ClipAnimation((AnimationClip)resourceFile.DataBlock!);
-                    DataSlots[ri] = new GraphClip(clipAnim, Skeleton);
+                    DataSlots[ri] = clip;
                 }
-                else if (resourceFile?.DataBlock is NmGraphDefinition childDefinition
-                    && !loadStack.Contains(resourceFile.FileName ?? resourceName))
+                else if (resources.Files.GetValueOrDefault(resourceName) is { DataBlock: NmGraphDefinition childDefinition } childFile
+                    && !loadStack.Contains(childFile.FileName ?? resourceName))
                 {
-                    ChildGraphs[ri] = new AnimationGraph(childDefinition, fileLoader, loadStack);
+                    ChildGraphs[ri] = new AnimationGraph(childDefinition, resources, loadStack);
                 }
             }
 
@@ -171,30 +193,56 @@ namespace ValveResourceFormat.Renderer
 
         /// <summary>
         /// Pulses a boolean control parameter as a one-shot "signal": the value reads as <c>true</c> for the
-        /// next graph update, then is automatically reset to <c>false</c>. Use for trigger parameters
+        /// next graph update, then returns to the value it held. Use for trigger parameters
         /// (e.g. <c>action_reset</c>) that would otherwise re-fire every frame while held <c>true</c>.
         /// </summary>
         public void SignalBoolParameter(string name)
         {
             lock (signalLock)
             {
+                signaledBoolParameters.TryAdd(name, BoolParameters[name]);
                 BoolParameters[name] = true;
-                signaledBoolParameters.Add(name);
             }
         }
 
-        /// <summary>
-        /// The root motion delta produced by the last update, in the character's local space: the new
-        /// world transform is this delta concatenated onto the previous one.
-        /// </summary>
-        internal FrameBone RootMotionDelta { get; private set; } = FrameBone.Identity;
+        /// <inheritdoc/>
+        public AnimationAlgorithm Algorithm => AnimationAlgorithm.AnimGraph2;
 
         /// <summary>
-        /// Advances the graph by <paramref name="timeStep"/> seconds and returns the resulting
-        /// parent-space pose on the NM skeleton.
+        /// Gets or sets whether updates record the clips they sample and how long each graph took, including
+        /// referenced graphs, for <see cref="SampledClips"/> and <see cref="GraphTimings"/>. Off by default.
         /// </summary>
-        internal FrameBone[] Update(float timeStep, FrameBone worldTransform)
+        public bool RecordUpdateDetails
         {
+            get => UpdateDetails != null;
+            set
+            {
+                UpdateDetails = value ? new GraphUpdateDetails() : null;
+                graphContext.UpdateDetails = UpdateDetails;
+            }
+        }
+
+        /// <summary>Gets the clips the last update sampled, in sampling order, while <see cref="RecordUpdateDetails"/> is set.</summary>
+        public IReadOnlyList<SampledClip> SampledClips => UpdateDetails?.SampledClips ?? (IReadOnlyList<SampledClip>)[];
+
+        /// <summary>
+        /// Gets how long the last update took for this graph, first, and each referenced graph it evaluated, in
+        /// evaluation order, while <see cref="RecordUpdateDetails"/> is set.
+        /// </summary>
+        public IReadOnlyList<GraphTiming> GraphTimings => UpdateDetails?.GraphTimings ?? (IReadOnlyList<GraphTiming>)[];
+
+        internal GraphUpdateDetails? UpdateDetails { get; private set; }
+
+        /// <inheritdoc/>
+        public FrameBone RootMotionDelta { get; private set; } = FrameBone.Identity;
+
+        /// <inheritdoc/>
+        public FrameBone[] Update(float timeStep, FrameBone worldTransform)
+        {
+            var details = UpdateDetails;
+            details?.Clear();
+            var timing = details?.BeginTiming(Name, 0) ?? -1;
+
             graphContext.WorldTransform = worldTransform;
             graphContext.WorldTransformInverse = worldTransform.Inverse();
 
@@ -217,14 +265,19 @@ namespace ValveResourceFormat.Renderer
 
             RootMotionDelta = result.RootMotionDelta;
 
+            if (timing >= 0)
+            {
+                details!.EndTiming(timing);
+            }
+
             // Reset one-shot signaled bool parameters now that the graph has consumed them this frame.
             if (signaledBoolParameters.Count > 0)
             {
                 lock (signalLock)
                 {
-                    foreach (var name in signaledBoolParameters)
+                    foreach (var (name, heldValue) in signaledBoolParameters)
                     {
-                        BoolParameters[name] = false;
+                        BoolParameters[name] = heldValue;
                     }
 
                     signaledBoolParameters.Clear();
@@ -383,12 +436,16 @@ namespace ValveResourceFormat.Renderer
         /// <summary>The clip's root motion track.</summary>
         public AnimLib.RootMotionData RootMotion { get; }
 
-        private readonly AnimationFrameCache frameCache;
+        private readonly Skeleton skeleton;
+
+        // Created on first sample, since a graph tree can reference a thousand clips and plays a few
+        private AnimationFrameCache? frameCache;
+        private AnimationFrameCache FrameCache => frameCache ??= new AnimationFrameCache(skeleton, []);
 
         public GraphClip(ClipAnimation animation, Skeleton skeleton)
         {
             Animation = animation;
-            frameCache = new AnimationFrameCache(skeleton, []);
+            this.skeleton = skeleton;
 
             var clipData = animation.Clip.Data.Root;
             var syncTrackData = clipData.GetProperty<KVObject>("m_syncTrack");
@@ -426,7 +483,7 @@ namespace ValveResourceFormat.Renderer
         /// <summary>Samples the clip at an exact frame index into a parent-space pose.</summary>
         public void SamplePoseAtFrame(int frameIndex, FrameBone[] pose)
         {
-            var frame = frameCache.GetFrame(Animation, frameIndex);
+            var frame = FrameCache.GetFrame(Animation, frameIndex);
             CopyFrame(frame, pose);
         }
 
@@ -443,12 +500,12 @@ namespace ValveResourceFormat.Renderer
             var lastFrameTime = (Animation.FrameCount - 1) / Animation.Fps;
             if (time >= lastFrameTime)
             {
-                var lastFrame = frameCache.GetFrame(Animation, Animation.FrameCount - 1);
+                var lastFrame = FrameCache.GetFrame(Animation, Animation.FrameCount - 1);
                 CopyFrame(lastFrame, pose);
                 return lastFrame;
             }
 
-            var frame = frameCache.GetInterpolatedFrame(Animation, time);
+            var frame = FrameCache.GetInterpolatedFrame(Animation, time);
             CopyFrame(frame, pose);
             return frame;
         }

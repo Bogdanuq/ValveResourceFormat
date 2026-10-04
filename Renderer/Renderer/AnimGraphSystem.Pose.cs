@@ -485,6 +485,7 @@ namespace ValveResourceFormat.Renderer.AnimLib
                 PreviousTime = 1f;
                 CurrentTime = 1f;
                 clip.SamplePoseAtFrame(0, result.Pose);
+                ctx.RecordClipSample(clip, 0f);
                 SampleAnimationEvents(ctx, ref result);
                 return result;
             }
@@ -592,6 +593,7 @@ namespace ValveResourceFormat.Renderer.AnimLib
             }
 
             clip.SamplePoseAtPercentage(sampleTime, result.Pose);
+            ctx.RecordClipSample(clip, sampleTime);
             return result;
         }
 
@@ -940,6 +942,7 @@ namespace ValveResourceFormat.Renderer.AnimLib
             }
 
             clip.SamplePoseAtPercentage(sampleTime, result.Pose);
+            ctx.RecordClipSample(clip, sampleTime);
 
             isFirstUpdate = false;
             return result;
@@ -1009,6 +1012,7 @@ namespace ValveResourceFormat.Renderer.AnimLib
             if (clip.FrameCount == 1)
             {
                 clip.SamplePoseAtFrame(0, result.Pose);
+                ctx.RecordClipSample(clip, 0f);
                 return result;
             }
 
@@ -1030,6 +1034,7 @@ namespace ValveResourceFormat.Renderer.AnimLib
             PreviousTime = CurrentTime;
 
             clip.SamplePoseAtPercentage(CurrentTime, result.Pose);
+            ctx.RecordClipSample(clip, CurrentTime);
             return result;
         }
     }
@@ -1202,7 +1207,13 @@ namespace ValveResourceFormat.Renderer.AnimLib
             ReflectControlParametersFromParent(ctx);
 
             var eventRangeStart = ctx.SampledEvents.Count;
+            var timing = ctx.UpdateDetails?.BeginTiming(childGraph.Name, ctx.GraphDepth + 1) ?? -1;
             var childResult = childGraph.Context.EvaluateReferencedGraph(ctx, updateRange);
+
+            if (timing >= 0)
+            {
+                ctx.UpdateDetails!.EndTiming(timing);
+            }
             ForwardParameterHintsToParent();
 
             // Surface the child's events so parent conditions can see them

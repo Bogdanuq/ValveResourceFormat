@@ -38,6 +38,9 @@ namespace ValveResourceFormat.Renderer.SceneNodes
 
         private readonly (string Name, string[] Materials)[] materialGroups;
 
+        /// <summary>Gets the animation graphs the model is bound to, by identifier and resource name. The first is the default.</summary>
+        public IReadOnlyList<(string Identifier, string GraphPath)> AnimationGraphReferences { get; }
+
         /// <summary>
         /// Initializes a new instance of the <see cref="ModelSceneNode"/> class and loads its meshes and animations.
         /// </summary>
@@ -49,6 +52,7 @@ namespace ValveResourceFormat.Renderer.SceneNodes
             : base(scene)
         {
             materialGroups = model.GetMaterialGroups().ToArray();
+            AnimationGraphReferences = model.AnimGraph2References;
             meshGroups = model.MeshGroups;
             lod = new ModelLodSelector(model.LodInfo);
             referenceMeshes = model.GetReferenceMeshNamesAndLoD().ToList();
@@ -448,11 +452,42 @@ namespace ValveResourceFormat.Renderer.SceneNodes
         }
 
         /// <summary>
+        /// Loads an animation graph to play on this model, reusing the clips the node already loaded. Each node
+        /// needs its own instance, which holds the playback state.
+        /// </summary>
+        /// <param name="graphPath">The graph resource name, such as one of <see cref="AnimationGraphReferences"/>.</param>
+        /// <returns>The graph, or <see langword="null"/> when it or a skeleton it animates could not be loaded.</returns>
+        public AnimationGraph? LoadAnimationGraph(string graphPath)
+        {
+            var fileLoader = Scene.RendererContext.FileLoader;
+
+            if (fileLoader.LoadFileCompiled(graphPath)?.DataBlock is not NmGraphDefinition graphDefinition)
+            {
+                return null;
+            }
+
+            return AnimationGraph.TryLoad(graphDefinition, fileLoader, clipName => Animations.GetValueOrDefault(clipName) as ClipAnimation);
+        }
+
+        /// <summary>Plays the model's default animation graph.</summary>
+        /// <returns><see langword="true"/> when the model has a default graph and it loaded.</returns>
+        public bool PlayDefaultAnimationGraph()
+        {
+            if (AnimationGraphReferences.Count == 0 || LoadAnimationGraph(AnimationGraphReferences[0].GraphPath) is not { } graph)
+            {
+                return false;
+            }
+
+            SetAnimationGraph(graph);
+            return true;
+        }
+
+        /// <summary>
         /// Plays an animation graph on this model, binding the skinning buffers the same way
         /// <see cref="SetAnimation"/> does. Pass <see langword="null"/> to detach the graph.
         /// </summary>
         /// <param name="graph">The animation graph to play, or <see langword="null"/> to detach.</param>
-        public void SetAnimationGraph(AnimationGraph? graph)
+        public void SetAnimationGraph(IAnimationGraph? graph)
         {
             AnimationController.SetAnimationGraph(graph);
             UpdateBoundingBox();

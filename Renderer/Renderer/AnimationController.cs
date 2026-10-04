@@ -284,12 +284,12 @@ namespace ValveResourceFormat.Renderer
         }
 
         /// <summary>
-        /// Attaches an animation graph as the pose source, playing it on the player of the external
-        /// skeleton the graph animates (registering that skeleton if needed). Pass <see langword="null"/>
+        /// Attaches an animation graph as the pose source, playing it on the player of the skeleton the graph
+        /// animates: the model's own, or an external one registered if needed. Pass <see langword="null"/>
         /// to detach the graph from the current player and return to clip playback.
         /// </summary>
         /// <param name="graph">The animation graph to play, or <see langword="null"/> to detach.</param>
-        public void SetAnimationGraph(AnimationGraph? graph)
+        public void SetAnimationGraph(IAnimationGraph? graph)
         {
             if (graph == null)
             {
@@ -297,13 +297,20 @@ namespace ValveResourceFormat.Renderer
                 return;
             }
 
-            if (!externalSkeletons.TryGetValue(graph.SkeletonName, out var external))
-            {
-                RegisterExternalSkeleton(graph.SkeletonName, graph.Skeleton);
-                external = externalSkeletons[graph.SkeletonName];
-            }
+            var newPlayer = modelPlayer;
+            SkeletonRetargeter? newRetargeter = null;
 
-            var newPlayer = external.Player;
+            if (graph.SkeletonName.Length > 0)
+            {
+                if (!externalSkeletons.TryGetValue(graph.SkeletonName, out var external))
+                {
+                    RegisterExternalSkeleton(graph.SkeletonName, graph.Skeleton);
+                    external = externalSkeletons[graph.SkeletonName];
+                }
+
+                newPlayer = external.Player;
+                newRetargeter = external.Retargeter;
+            }
 
             if (newPlayer != player)
             {
@@ -313,7 +320,7 @@ namespace ValveResourceFormat.Renderer
             }
 
             player = newPlayer;
-            externalRetargeter = external.Retargeter;
+            externalRetargeter = newRetargeter;
 
             player.SetGraph(graph);
             updateHandler(ActiveAnimation, -1);

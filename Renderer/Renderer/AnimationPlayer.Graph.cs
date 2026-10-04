@@ -9,13 +9,16 @@ namespace ValveResourceFormat.Renderer
     public partial class AnimationPlayer
     {
         /// <summary>Gets the animation graph driving this player, or <see langword="null"/> when clips drive it.</summary>
-        public AnimationGraph? Graph { get; private set; }
+        public IAnimationGraph? Graph { get; private set; }
+
+        /// <summary>Gets what drives the pose: the attached graph, the clips, or nothing.</summary>
+        public AnimationAlgorithm Algorithm => Graph?.Algorithm ?? (ActiveAnimation != null ? AnimationAlgorithm.Sequence : AnimationAlgorithm.None);
 
         /// <summary>
         /// Attaches an animation graph as this player's pose source, replacing any playing clips.
         /// Pass <see langword="null"/> to detach and return to clip playback.
         /// </summary>
-        public void SetGraph(AnimationGraph? graph)
+        public void SetGraph(IAnimationGraph? graph)
         {
             Graph = graph;
             graphRootTransform = FrameBone.Identity;
@@ -28,7 +31,7 @@ namespace ValveResourceFormat.Renderer
             forceUpdate = true;
         }
 
-        private bool UpdateFromGraph(AnimationGraph graph, float timeStep, Matrix4x4 rootTransform)
+        private bool UpdateFromGraph(IAnimationGraph graph, float timeStep, Matrix4x4 rootTransform)
         {
             if (IsPaused && !forceUpdate)
             {
