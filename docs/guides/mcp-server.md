@@ -92,7 +92,7 @@ Tools that act on a tab take an optional `tab` id from `open_file` or `list_tabs
 
 ## Behavior
 
-- Files inside a package use `vpk:package.vpk:inner/path`, the same links the command line accepts (see [Getting Started](./getting-started.md#opening-vpk-links)).
+- Files inside a package use `vpk:package.vpk:inner/path`, the same links the command line accepts (see [Command Line](./command-line.md)).
 - Calls run one at a time, because the viewer state they drive is global. `get_status`, `get_log`, `list_tabs` and `resume` are the exception: they answer while another call is running, so `resume` can abandon a running `step`. A `notifications/cancelled` naming a running request cancels it.
 - The viewer keeps settings changes in memory only and writes nothing to its settings file: no recent files, window placement, field of view or saved cameras.
 - Replies are ASCII. Other characters in paths and log lines come back as JSON unicode escapes.
