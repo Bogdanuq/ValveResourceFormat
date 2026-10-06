@@ -105,8 +105,8 @@ in the Dump column.
 | SPIR-V `.spv`                      | Decompiled via SPIRV-Cross to HLSL (or GLSL), same as Vulkan vcs stages                                                                                                                                       |
 | dat (VCCD closed captions)         | Grid view; export to `.txt` KV1 (caption keys are lost, see [below](#choreo-captions-and-ui))                                                                                                                 |
 | bin (tools asset info)             | Text dump of the per-asset dependency and search data (an embedded KV3 segment in newer files is parsed but not dumped)                                                                                       |
-| vfont                              | Decrypted to the original TTF/OTF (CLI only)                                                                                                                                                                  |
-| uifont (CS:GO/CS2 UI font package) | Embedded fonts decrypted and extracted exactly (CLI only)                                                                                                                                                     |
+| vfont                              | Decrypted to the original TTF/OTF (CLI, and single-file export in the GUI)                                                                                                                                    |
+| uifont (CS:GO/CS2 UI font package) | Embedded fonts decrypted and extracted exactly (CLI, and single-file export in the GUI)                                                                                                                       |
 | vfe (flex scene file)              | Text view; export to a `.txt` dump                                                                                                                                                                            |
 | nav (navigation mesh)              | 3D view; export to `.glb`                                                                                                                                                                                     |
 | gnv (Dota grid navigation)         | Text info dump                                                                                                                                                                                                |
@@ -122,12 +122,12 @@ See the [exporting models guide](./exporting-models.md) for the workflow.
 
 Decompiling produces a `.vmdl` plus DMX files for meshes, physics shapes, and animations,
 loadable in ModelDoc. Reconstructed: render meshes with all vertex streams, skeleton,
-attachments, bodygroups, LOD groups, hitbox sets, material groups (skins), static collision
-shapes, physics joints and body properties, bone constraints, IK chains and control rigs,
-face flexes, breakable pieces, cloth (chains, sheets, springs, collision shapes and effects
-rebuilt from the compiled `FeModel`), embedded sequences with events/layers/root motion,
-Animgraph 2 clips and references, and a wide range of game data blocks (prop_data, particle
-attachments, and many more) passed through verbatim.
+attachments with their camera previews, bodygroups, LOD groups, hitbox sets, material groups
+(skins), static collision shapes, physics joints and body properties, bone constraints, IK
+chains and control rigs, face flexes, breakable pieces, cloth (chains, sheets, springs,
+collision shapes and effects rebuilt from the compiled `FeModel`), embedded sequences with
+events/layers/root motion, Animgraph 2 clips and references, and a wide range of game data
+blocks (prop_data, particle attachments, and many more) passed through verbatim.
 
 Cloth decompiling is experimental. Most cloth recompiles to the same simulation, but not all of
 it does, so please report models whose cloth comes back wrong. A model whose cloth cannot be
@@ -145,6 +145,7 @@ What a recompiled model will be missing:
 | Blend sequences (blend spaces)            | Not implemented              | Multi-reference blend sequences collapse to their first referenced animation.                                                                                                                                                                                                                                                                                         |
 | Vertical root motion                      | Intentional                  | The Z component of root motion is zeroed on export, matching how the engine applies movement to the visible body.                                                                                                                                                                                                                                                     |
 | Extra skin materials                      | Not implemented              | If a material group lists more materials than the default group, the extras are silently dropped.                                                                                                                                                                                                                                                                     |
+| Attachment camera preview look            | Not in compiled files        | The `preview_scale` and `background_color` of an `Attachment Camera Preview` only affect the editor, so they come back at their defaults. A camera on an attachment that the compiled model does not have is dropped.                                                                                                                                                 |
 
 ### glTF Export
 
@@ -289,9 +290,9 @@ per slice.
 ## Animation
 
 Legacy embedded sequences decode through all common per-bone compression types (unknown
-decoder types are skipped silently), and Animgraph 2 clips (`vnmclip`) decode fully:
-compressed poses, 3D root motion (position plus yaw; the root track's pitch and roll are
-dropped), float curves, events, and secondary skeleton tracks.
+decoder types are skipped with a logged error), and Animgraph 2 clips (`vnmclip`) decode
+fully: compressed poses, 3D root motion (position plus yaw; the root track's pitch and roll
+are dropped), float curves, events, and secondary skeleton tracks.
 Both feed viewer playback, glTF export, and DMX reconstruction, including retargeting of
 clips authored on a different skeleton.
 
@@ -321,8 +322,8 @@ export into decompiled models; joint motors do not. Not parsed anywhere: constra
 (`m_constraints2`), visible only in the raw text dump. The `FeModel` cloth/softbody block is
 decompiled into the model's cloth nodes (see [Models](#models-vmdl)). Surface properties are
 resolved by name only; their physical values (friction, density, sounds) are not consumed or
-exported. Text-dumping the PHYS block of gigabyte-class maps can run out of memory; dump the
-block to a file via the CLI instead
+exported. KeyValues blocks over 64 MiB, such as the PHYS block of gigabyte-class maps, are too
+large to show as text; the viewer offers **Save as text...** for them instead
 ([#840](https://github.com/ValveResourceFormat/ValveResourceFormat/issues/840)).
 
 ## Particles (vpcf)
