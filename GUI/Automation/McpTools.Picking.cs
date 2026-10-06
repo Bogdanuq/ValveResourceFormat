@@ -108,8 +108,7 @@ internal sealed partial class McpTools
         {
             using var rendering = RenderLoopThread.BeginAutomationRendering();
 
-            // The picker reads row Height - y from the bottom, one past the top row for y = 0.
-            picker.RequestNextFrame(pixelX, pixelY + 1, intent);
+            picker.RequestNextFrame(pixelX, pixelY, intent);
 
             if (!await WaitOnRenderLoop(answered.Task, cancellationToken).ConfigureAwait(false))
             {
