@@ -114,12 +114,6 @@ namespace ValveResourceFormat.Renderer
         public string? WorldGroup { get; init; }
 
         /// <summary>
-        /// Whether the entities drawn here take part in collision. A spawn group placed inside a map, such
-        /// as a 3D sky, is scenery: nothing can reach it, so its entities never build a collider.
-        /// </summary>
-        internal bool EntitiesCollide { get; set; } = true;
-
-        /// <summary>
         /// How large an editor marker is drawn here next to the entity it marks. A 3D sky is magnified by
         /// the camera it is drawn through, so its markers shrink to come back out at their normal size.
         /// </summary>
@@ -339,6 +333,8 @@ namespace ValveResourceFormat.Renderer
         /// <param name="dynamic">When <see langword="true"/>, removes from the dynamic partition; otherwise the static partition.</param>
         public void Remove(SceneNode node, bool dynamic)
         {
+            node.DetachFromParent();
+
             if (dynamic)
             {
                 dynamicNodes.Remove(node);
@@ -569,7 +565,10 @@ namespace ValveResourceFormat.Renderer
         {
             foreach (var node in staticNodes)
             {
-                node.Update(updateContext);
+                if (node.Parent == null)
+                {
+                    node.UpdateHierarchy(updateContext);
+                }
             }
 
             foreach (var node in dynamicNodes)
@@ -579,7 +578,7 @@ namespace ValveResourceFormat.Renderer
                     continue; // child nodes are updated by their parent
                 }
 
-                node.Update(updateContext);
+                node.UpdateHierarchy(updateContext);
             }
 
             SimulateNodes(updateContext);

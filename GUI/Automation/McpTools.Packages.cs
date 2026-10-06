@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using GUI.Types.Exporter;
 using ValvePak;
+using ValveResourceFormat.IO;
 
 namespace GUI.Automation;
 
@@ -115,7 +116,7 @@ internal sealed partial class McpTools
             return McpToolResult.Error($"Could not read '{path}' as a package: {e.Message}");
         }
 
-        var link = "vpk:" + MainForm.EscapeVpkLinkPath(Path.GetFullPath(path).Replace('\\', '/'));
+        var link = "vpk:" + VpkLink.EscapePath(Path.GetFullPath(path).Replace('\\', '/'));
 
         return ListEntries(package, link, query);
     }
@@ -176,7 +177,7 @@ internal sealed partial class McpTools
 
             if (link != null)
             {
-                file["open_path"] = $"{link}:{MainForm.EscapeVpkLinkPath(path)}";
+                file["open_path"] = $"{link}:{VpkLink.EscapePath(path)}";
             }
 
             files.Add(file);

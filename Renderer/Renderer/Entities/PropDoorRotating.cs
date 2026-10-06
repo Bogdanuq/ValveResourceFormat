@@ -186,7 +186,7 @@ public class PropDoorRotating : BaseToggle
         var slaveName = KeyValues.GetStringProperty("slavename");
         var searchName = string.IsNullOrEmpty(slaveName) ? TargetName : slaveName;
 
-        foreach (var entity in EntitySystem.FindAllByTargetName(searchName, Scene))
+        foreach (var entity in EntitySystem.FindAllByTargetName(searchName))
         {
             if (entity != this && entity is PropDoorRotating door && door.slaves.Count == 0)
             {
@@ -614,7 +614,7 @@ public class PropDoorRotating : BaseToggle
             State = DoorState.Closed;
         }
 
-        Teleport(Origin, angles);
+        JumpTo(Origin, angles);
     }
 
     /// <summary>
@@ -700,8 +700,8 @@ public class PropDoorRotating : BaseToggle
     // Whether an entity stands to the left of the door, looking from the hinge along the panel
     private bool IsOnLeft(BaseEntity entity)
     {
-        var alongPanel = MathUtils.SafeNormalize(((Collider?.WorldBounds.Center ?? Origin) - Origin) with { Z = 0f });
-        var toEntity = MathUtils.SafeNormalize((entity.Origin - Origin) with { Z = 0f });
+        var alongPanel = MathUtils.SafeNormalize(((Collider?.WorldBounds.Center ?? WorldOrigin) - WorldOrigin) with { Z = 0f });
+        var toEntity = MathUtils.SafeNormalize((entity.WorldOrigin - WorldOrigin) with { Z = 0f });
 
         return alongPanel.X * toEntity.Y - alongPanel.Y * toEntity.X >= 0f;
     }
@@ -756,13 +756,13 @@ public class PropDoorRotating : BaseToggle
         var ignore = lastActivator ?? Master?.lastActivator;
 
         // Shrunk by the surface margin, so a neighbour resting exactly against the swept box does not count
-        var center = Origin + volume.Center;
+        var center = WorldOrigin + volume.Center;
         var halfExtents = volume.Size * 0.5f - new Vector3(Rubikon.SurfaceEpsilon);
 
         foreach (var entity in EntitySystem.Entities)
         {
             if (entity == this || entity == ignore || entity == Owner || entity.MoveParent == this
-                || entity is WorldEntity or PlayerEntity || entity.Scene != Scene || !entity.IsCollidable)
+                || entity is WorldEntity or PlayerEntity || !entity.IsCollidable)
             {
                 continue;
             }
@@ -813,6 +813,23 @@ public class PropDoorRotating : BaseToggle
         }
     }
 
+    /// <summary>
+    /// Runs on the first tick something blocks the swing. The door holds where it is, falls quiet, and
+    /// carries on once it is clear.
+    /// </summary>
+    protected override void OnStartBlocked(BaseEntity blocker)
+    {
+        StopMoveSound();
+        EntitySystem.TriggerOutput(this, State == DoorState.Closing ? "OnBlockedClosing" : "OnBlockedOpening", blocker);
+    }
+
+    /// <inheritdoc/>
+    protected override void OnEndBlocked()
+    {
+        StartMoveSound();
+        EntitySystem.TriggerOutput(this, State == DoorState.Closing ? "OnUnblockedClosing" : "OnUnblockedOpening", this);
+    }
+
     private static string? NonEmpty(string? value) => string.IsNullOrEmpty(value) ? null : value;
 
     private bool IsSilent => HasSpawnFlags(SpawnFlag.Silent);
@@ -825,7 +842,7 @@ public class PropDoorRotating : BaseToggle
             return;
         }
 
-        moveSound = Sound.Play(soundMove, Origin);
+        moveSound = Sound.Play(soundMove, WorldOrigin);
         isMoveSoundOn = true;
     }
 
@@ -840,7 +857,7 @@ public class PropDoorRotating : BaseToggle
     {
         if (!IsSilent && soundEvent != null)
         {
-            Sound.Play(soundEvent, Origin);
+            Sound.Play(soundEvent, WorldOrigin);
         }
     }
 
@@ -859,7 +876,7 @@ public class PropDoorRotating : BaseToggle
             return;
         }
 
-        Sound.Play(sound, Origin);
+        Sound.Play(sound, WorldOrigin);
         lockSoundNext = EntitySystem.CurrentTime + LockSoundWait;
     }
 }

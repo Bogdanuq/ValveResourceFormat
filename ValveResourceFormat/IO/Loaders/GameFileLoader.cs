@@ -1,9 +1,12 @@
 //#define DEBUG_FILE_LOAD
 
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.IO.Enumeration;
 using System.Threading;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using ValveKeyValue;
 using ValvePak;
 using ValveResourceFormat.CompiledShader;
@@ -60,6 +63,7 @@ namespace ValveResourceFormat.IO
         private readonly List<string> CurrentAddonSearchPaths = [];
 
         private readonly string? CurrentFileName;
+        private readonly ILogger Logger;
         private string? PreferredAddonFolderOnDisk;
         private string? WorkshopContentFolder;
         private bool ShaderPackagesScanned;
@@ -77,13 +81,15 @@ namespace ValveResourceFormat.IO
         /// </summary>
         /// <param name="currentPackage">The current package to search for files in.</param>
         /// <param name="currentFileName">The path on disk to the current file that is being opened.</param>
+        /// <param name="logger">Logger for the search paths that get mounted and the files that fail to load.</param>
         /// <remarks>
         /// fileName is needed when used by GUI when package has not yet been resolved.
         /// </remarks>
-        public GameFileLoader(Package? currentPackage, string? currentFileName)
+        public GameFileLoader(Package? currentPackage, string? currentFileName, ILogger? logger = null)
         {
             CurrentPackage = currentPackage;
             CurrentFileName = currentFileName;
+            Logger = logger ?? NullLogger.Instance;
 
             // Find gameinfo.gi by walking up from the current file, preload vpks and add folders to search paths
             if (CurrentFileName != null)
@@ -93,16 +99,16 @@ namespace ValveResourceFormat.IO
             }
 
 #if DEBUG_FILE_LOAD
-            Console.Error.WriteLine("Current VPKs to search in order:");
+            Logger.LogDebug("Current VPKs to search in order:");
 
             foreach (var searchPath in CurrentGamePackages)
             {
-                Console.Error.WriteLine($"{searchPath.FileName}.vpk");
+                Logger.LogDebug("{Package}.vpk", searchPath.FileName);
             }
 
             foreach (var searchPath in CurrentGameSearchPaths)
             {
-                Console.Error.WriteLine(searchPath);
+                Logger.LogDebug("{SearchPath}", searchPath);
             }
 #endif
         }
@@ -160,7 +166,7 @@ namespace ValveResourceFormat.IO
             if (entry != null)
             {
 #if DEBUG_FILE_LOAD
-                Console.WriteLine($"Loaded \"{file}\" from current vpk");
+                Logger.LogDebug("Loaded \"{File}\" from current vpk", file);
 #endif
 
                 return (null, CurrentPackage, entry);
@@ -173,6 +179,10 @@ namespace ValveResourceFormat.IO
 
                 if (addonPath != null)
                 {
+#if DEBUG_FILE_LOAD
+                    Logger.LogDebug("Loaded \"{File}\" from addon folder: \"{Path}\"", file, addonPath);
+#endif
+
                     return (addonPath, null, null);
                 }
             }
@@ -185,7 +195,7 @@ namespace ValveResourceFormat.IO
                     if (AddonDependenciesPending)
                     {
 #if DEBUG_FILE_LOAD
-                        Console.WriteLine($"Attempting to find addon dependencies while loading \"{file}\"");
+                        Logger.LogDebug("Attempting to find addon dependencies while loading \"{File}\"", file);
 #endif
 
                         LoadAddonDependencies();
@@ -203,7 +213,7 @@ namespace ValveResourceFormat.IO
                 if (entry != null)
                 {
 #if DEBUG_FILE_LOAD
-                    Console.WriteLine($"Loaded \"{file}\" from addon vpk \"{package.FileName}\"");
+                    Logger.LogDebug("Loaded \"{File}\" from addon vpk \"{Package}\"", file, package.FileName);
 #endif
 
                     return (null, package, entry);
@@ -216,6 +226,10 @@ namespace ValveResourceFormat.IO
 
                 if (addonPath != null)
                 {
+#if DEBUG_FILE_LOAD
+                    Logger.LogDebug("Loaded \"{File}\" from addon folder: \"{Path}\"", file, addonPath);
+#endif
+
                     return (addonPath, null, null);
                 }
             }
@@ -229,7 +243,7 @@ namespace ValveResourceFormat.IO
                 {
 #if DEBUG_FILE_LOAD
                     Debug.Assert(package != null);
-                    Console.WriteLine($"Loaded \"{file}\" from preloaded vpk \"{package.FileName}\"");
+                    Logger.LogDebug("Loaded \"{File}\" from preloaded vpk \"{Package}\"", file, package.FileName);
 #endif
 
                     return (null, package, entry);
@@ -246,13 +260,13 @@ namespace ValveResourceFormat.IO
 
             if (logNotFound)
             {
-                Console.Error.WriteLine($"Failed to load \"{file}\"");
+                Logger.LogWarning("Failed to load \"{File}\"", file);
             }
 
 #if DEBUG
             if (string.IsNullOrEmpty(file) || file == CompiledFileSuffix)
             {
-                Console.Error.WriteLine($"Empty string passed to file loader here: {Environment.StackTrace}");
+                Logger.LogWarning("Empty string passed to file loader here: {StackTrace}", Environment.StackTrace);
 
 #if DEBUG_FILE_LOAD
                 System.Diagnostics.Debugger.Break();
@@ -330,7 +344,7 @@ namespace ValveResourceFormat.IO
 
             if (selectedPlatformType == VcsPlatformType.Undetermined)
             {
-                Console.Error.WriteLine($"Failed to find shader \"{shaderName}\".");
+                Logger.LogWarning("Failed to find shader \"{ShaderName}\"", shaderName);
 
                 return collection;
             }
@@ -427,16 +441,16 @@ namespace ValveResourceFormat.IO
                 }
                 catch (Exception e)
                 {
-                    Console.Error.WriteLine(e);
+                    Logger.LogError(e, "Failed to read \"{GameInfo}\"", gameinfoPath);
                     return;
                 }
             }
 
-            gameInfo.TryGetValue("game", out var gameName);
-            Console.WriteLine($"Found \"{gameName}\" from \"{gameinfoPath}\"");
+            var gameName = gameInfo.TryGetValue("game", out var game) ? game.ToString() : null;
+            Logger.LogInformation("Found \"{GameName}\" from \"{GameInfo}\"", gameName, gameinfoPath);
 
             // The walk starts at the file being opened, so the first one found is the mod it belongs to.
-            GameName ??= gameName?.ToString();
+            GameName ??= gameName;
 
             var fileSystem = gameInfo["FileSystem"];
 
@@ -506,7 +520,7 @@ namespace ValveResourceFormat.IO
 
             if (success)
             {
-                Console.WriteLine($"Added folder \"{searchPath}\" to game search paths");
+                Logger.LogInformation("Added folder \"{SearchPath}\" to game search paths", searchPath);
             }
 
             return success;
@@ -521,7 +535,7 @@ namespace ValveResourceFormat.IO
 
             if (success)
             {
-                Console.WriteLine($"Removed folder \"{searchPath}\" from game search paths");
+                Logger.LogInformation("Removed folder \"{SearchPath}\" from game search paths", searchPath);
             }
 
             return success;
@@ -555,9 +569,9 @@ namespace ValveResourceFormat.IO
             return CurrentAddonPackages.Remove(package) || CurrentGamePackages.Remove(package);
         }
 
-        private static Package ReadPackage(string searchPath)
+        private Package ReadPackage(string searchPath)
         {
-            Console.WriteLine($"Preloading vpk \"{searchPath}\"");
+            Logger.LogInformation("Preloading vpk \"{SearchPath}\"", searchPath);
 
             var package = new Package();
             package.OptimizeEntriesForBinarySearch(StringComparison.OrdinalIgnoreCase);
@@ -585,7 +599,7 @@ namespace ValveResourceFormat.IO
             }
 
             CurrentAddonSearchPaths.Insert(0, folder);
-            Console.WriteLine($"Added addon folder \"{folder}\" to search paths");
+            Logger.LogInformation("Added addon folder \"{Folder}\" to search paths", folder);
         }
 
         /// <summary>
@@ -654,7 +668,7 @@ namespace ValveResourceFormat.IO
             if (!Path.IsPathFullyQualified(directory) && !directory.StartsWith('/'))
             {
 #if DEBUG_FILE_LOAD
-                Console.WriteLine($"Not a fully qualified path \"{directory}\", not checking for mod");
+                Logger.LogDebug("Not a fully qualified path \"{Directory}\", not checking for mod", directory);
 #endif
 
                 return null;
@@ -670,7 +684,7 @@ namespace ValveResourceFormat.IO
                 }
 
 #if DEBUG_FILE_LOAD
-                Console.WriteLine($"Scanning \"{directory}\"");
+                Logger.LogDebug("Scanning \"{Directory}\"", directory);
 #endif
 
                 if (directory.EndsWith(AddonsSuffix, StringComparison.InvariantCultureIgnoreCase))
@@ -856,7 +870,7 @@ namespace ValveResourceFormat.IO
             }
             catch (Exception e)
             {
-                Console.Error.WriteLine($"Failed to read addoninfo.txt: {e.Message}");
+                Logger.LogWarning("Failed to read addoninfo.txt: {Error}", e.Message);
                 return;
             }
 
@@ -888,7 +902,7 @@ namespace ValveResourceFormat.IO
                     }
                     else
                     {
-                        Console.Error.WriteLine($"Addon dependency {dependencyId} is not installed");
+                        Logger.LogWarning("Addon dependency {DependencyId} is not installed", dependencyId);
                     }
 
                     continue;
@@ -967,7 +981,7 @@ namespace ValveResourceFormat.IO
                 if (CurrentFileName == vpk)
                 {
 #if DEBUG_FILE_LOAD
-                    Console.WriteLine($"VPK \"{vpk}\" is the same we just opened, skipping");
+                    Logger.LogDebug("VPK \"{Vpk}\" is the same we just opened, skipping", vpk);
 #endif
                     continue;
                 }
@@ -999,43 +1013,21 @@ namespace ValveResourceFormat.IO
 
             var appIdString = filePath[contentIndexEnd..slashAfterAppId];
 
-            if (!uint.TryParse(appIdString, out var appId))
+            if (!int.TryParse(appIdString, NumberStyles.None, CultureInfo.InvariantCulture, out var appId))
             {
                 return [];
             }
 
 #if DEBUG_FILE_LOAD
-            Console.WriteLine($"Parsed appid {appId} for workshop file {filePath}");
+            Logger.LogDebug("Parsed appid {AppId} for workshop file {FilePath}", appId, filePath);
 #endif
 
-            var steamPath = filePath[..(contentIndex + "steamapps/".Length)];
-            var appManifestPath = Path.Join(steamPath, $"appmanifest_{appId}.acf");
+            var steamPath = filePath[..(contentIndex + "steamapps".Length)];
 
             WorkshopContentFolder = filePath[..slashAfterAppId];
 
-            // Load appmanifest to get the install directory for this appid
-            KVObject appManifestKv;
-
-            try
-            {
-                using var appManifestStream = File.OpenRead(appManifestPath);
-                appManifestKv = KVSerializer.Create(KVSerializationFormat.KeyValues1Text).Deserialize(appManifestStream, KVSerializerOptions.DefaultOptions);
-            }
-            catch
-            {
-                return [];
-            }
-
-            var installDir = appManifestKv["installdir"].ToString();
-
-            if (installDir == null)
-            {
-                return [];
-            }
-
-            var gamePath = Path.Combine(steamPath, "common", installDir);
-
-            if (!Directory.Exists(gamePath))
+            // The app is usually installed in the same library as its workshop content, but it can be moved to another one
+            if ((GameFolderLocator.FindSteamGameInLibrary(steamPath, appId) ?? GameFolderLocator.FindSteamGameByAppId(appId)) is not { GamePath: var gamePath })
             {
                 return [];
             }
@@ -1082,6 +1074,10 @@ namespace ValveResourceFormat.IO
 
                 if (path != null)
                 {
+#if DEBUG_FILE_LOAD
+                    Logger.LogDebug("Loaded \"{File}\" from disk: \"{Path}\"", file, path);
+#endif
+
                     return path;
                 }
             }
@@ -1110,13 +1106,7 @@ namespace ValveResourceFormat.IO
                 return null;
             }
 
-            path = Path.GetFullPath(path);
-
-#if DEBUG_FILE_LOAD
-            Console.WriteLine($"Loaded \"{file}\" from disk: \"{path}\"");
-#endif
-
-            return path;
+            return Path.GetFullPath(path);
         }
 
         private void FindAndLoadShaderPackages()

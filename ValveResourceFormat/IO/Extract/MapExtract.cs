@@ -154,6 +154,10 @@ public sealed partial class MapExtract
 
     /// <summary>Gets or sets the progress reporter.</summary>
     public IProgress<string>? ProgressReporter { get; set; }
+
+    /// <summary>Gets or sets whether the models extracted with the map reconstruct their soft-body (cloth) physics.</summary>
+    public bool ReconstructSoftbody { get; set; } = true;
+
     /// <summary>Gets the physics vertex matcher used for physics mesh processing.</summary>
     public PhysicsTriangleMatcher? PhysTriangleMatcher { get; private set; }
 
@@ -483,7 +487,7 @@ public sealed partial class MapExtract
 
             var sceneObjectExtract = sceneObject.ResourceType switch
             {
-                ResourceType.Model => new ModelExtract(sceneObject, FileLoader),
+                ResourceType.Model => new ModelExtract(sceneObject, FileLoader) { ReconstructSoftbody = ReconstructSoftbody },
                 ResourceType.Mesh => new ModelExtract((Mesh)sceneObject.DataBlock, sceneObjectResourceName),
                 _ => throw new InvalidDataException($"Unhandled resource type: {sceneObject.ResourceType} as a scene object"),
             };
@@ -2126,7 +2130,7 @@ public sealed partial class MapExtract
     }
 
     internal static string GetAutoPhysicsMaterialName(string rootFolder, string surfaceProperty)
-        => NormalizePath(Path.Combine(rootFolder, "_vrf", "physics_surfaces", surfaceProperty + ".vmat"))!;
+        => NormalizePath(Path.Combine(rootFolder, "_vrf", "physics_surfaces", surfaceProperty.ToLowerInvariant() + ".vmat"))!;
 
     private string GetAndExportAutoPhysicsMaterialName(string surfaceProperty)
     {
@@ -2475,6 +2479,7 @@ public sealed partial class MapExtract
                 ? ModelExtract.ModelExtractType.Map_PhysicsToRenderMesh
                 : ModelExtract.ModelExtractType.Default,
             PhysicsToRenderMaterialNameProvider = (_) => toolTexture,
+            ReconstructSoftbody = ReconstructSoftbody,
         };
 
         var vmdl = modelExtract.ToContentFile();
@@ -2498,8 +2503,7 @@ public sealed partial class MapExtract
                 continue;
             }
 
-            var editString = ToEditString(value);
-            editString = RemoveTargetnamePrefix(editString);
+            var editString = ApplyNameFixup(ToEditString(value) ?? string.Empty, string.Empty, string.Empty);
 
             mapEntity.EntityProperties.Add(propertyKey, editString);
         }
@@ -2512,7 +2516,7 @@ public sealed partial class MapExtract
                 {
                     OutputName = connection.OutputName,
                     TargetType = (int)connection.TargetType,
-                    TargetName = RemoveTargetnamePrefix(connection.TargetName),
+                    TargetName = ApplyNameFixup(connection.TargetName, string.Empty, string.Empty),
                     InputName = connection.InputName,
                     OverrideParam = connection.OverrideParam,
                     Delay = connection.Delay,
@@ -2650,7 +2654,7 @@ public sealed partial class MapExtract
 
             case KVValueType.String:
                 // The compiler prefixes entity names used as literals, like it does targetnames
-                var text = RemoveTargetnamePrefix((string)value);
+                var text = ApplyNameFixup((string)value, string.Empty, string.Empty);
 
                 // TODO: Use value.Flag.SerializeFlagName() once ValveKeyValue with KVFlagExtensions is released
                 var specificType = value.Flag switch
@@ -2714,7 +2718,7 @@ public sealed partial class MapExtract
         return first.ValueType switch
         {
             KVValueType.Boolean => new Datamodel.BoolArray(items.Select(static item => (bool)item)),
-            KVValueType.String => new Datamodel.StringArray(items.Select(static item => RemoveTargetnamePrefix((string)item))),
+            KVValueType.String => new Datamodel.StringArray(items.Select(static item => ApplyNameFixup((string)item, string.Empty, string.Empty))),
             var type when IsKeyValues3Unsigned(type) => new Datamodel.UInt64Array(items.Select(static item => Convert.ToUInt64(item, CultureInfo.InvariantCulture))),
             var type when IsKeyValues3Float(type) => new Datamodel.FloatArray(items.Select(static item => Convert.ToSingle(item, CultureInfo.InvariantCulture))),
             var type when IsKeyValues3Signed(type) => new Datamodel.IntArray(items.Select(static item => unchecked((int)Convert.ToInt64(item, CultureInfo.InvariantCulture)))),

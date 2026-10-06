@@ -124,15 +124,20 @@ Decompiling produces a `.vmdl` plus DMX files for meshes, physics shapes, and an
 loadable in ModelDoc. Reconstructed: render meshes with all vertex streams, skeleton,
 attachments, bodygroups, LOD groups, hitbox sets, material groups (skins), static collision
 shapes, physics joints and body properties, bone constraints, IK chains and control rigs,
-face flexes, breakable pieces, embedded sequences with events/layers/root motion, Animgraph 2
-clips and references, and a wide range of game data blocks (prop_data, particle attachments,
-and many more) passed through verbatim.
+face flexes, breakable pieces, cloth (chains, sheets, springs, collision shapes and effects
+rebuilt from the compiled `FeModel`), embedded sequences with events/layers/root motion,
+Animgraph 2 clips and references, and a wide range of game data blocks (prop_data, particle
+attachments, and many more) passed through verbatim.
+
+Cloth decompiling is experimental. Most cloth recompiles to the same simulation, but not all of
+it does, so please report models whose cloth comes back wrong. A model whose cloth cannot be
+rebuilt is decompiled without it, with a warning.
 
 What a recompiled model will be missing:
 
 | What                                      | Why                          | Details                                                                                                                                                                                                                                                                                                                                                               |
 | ----------------------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Cloth simulation                          | Partly not in compiled files | The compiled `FeModel` cloth data is not parsed, and some of the authored cloth attributes do not survive compilation in recoverable form, so recompiled models will not simulate. [#653](https://github.com/ValveResourceFormat/ValveResourceFormat/issues/653)                                                                                                      |
+| Exact cloth values                        | Partly not in compiled files | Some cloth values, such as painted masses and planarized collision shapes, are worked back from the compiled data and can come out slightly different. Models built by older compilers differ most.                                                                                                                                                                   |
 | Physics constraints and motors            | Not implemented              | `m_constraints2` constraints are not parsed, and joint motors are not exported.                                                                                                                                                                                                                                                                                       |
 | Stereo flex controls                      | Not in compiled files        | The compiler splits a stereo slider into independent left and right controllers, so it comes back as two sliders.                                                                                                                                                                                                                                                     |
 | Animations from external animation groups | Not implemented              | Only embedded sequences and Animgraph 2 clips get DMX files; sequences in referenced `vagrp` files are skipped. Animations from referenced include-models are not written either, but their `AnimIncludeModel` references are kept, so they come back if those models are decompiled too.                                                                             |
@@ -277,6 +282,8 @@ per slice.
 | Mip chain                                  | Format limitation     | File extraction always uses the largest mip only; the texture viewer can save the mip, face, or slice it is currently showing, and per-mip access exists in the library API. HL:Alyx's per-mip roughness packing therefore has no single-file preserving export path. [#936](https://github.com/ValveResourceFormat/ValveResourceFormat/issues/936) |
 | `.vtex` config for cubemaps/arrays/volumes | Not implemented       | Only flat 2D textures get a reconstructed `.vtex` compile config; other shapes extract images only. [#856](https://github.com/ValveResourceFormat/ValveResourceFormat/issues/856)                                                                                                                                                                   |
 | Clamp/LOD flags in reconstructed `.vtex`   | Not implemented       | `SUGGEST_CLAMP*` and no-LOD flags are parsed but not written into the regenerated config.                                                                                                                                                                                                                                                           |
+| Zstd compressed mips                       | Not implemented       | Textures whose mips are Zstd compressed parse, but reading their pixels throws. None ship in CS2.                                                                                                                                                                                                                                                  |
+| `R32_UINT` in the renderer                 | Not implemented       | Integer textures decode for export, but are not uploaded to the GPU. None ship in current games.                                                                                                                                                                                                                                                    |
 | Transform detection without edit info      | Not implemented       | Which compile-time transform to reverse is detected from the resource's edit info block; files stripped of it export still-encoded pixels without warning.                                                                                                                                                                                          |
 
 ## Animation
@@ -311,11 +318,11 @@ carry only hulls and meshes. Hitboxes fully round-trip into decompiled models.
 
 Joints (`m_joints`) and their bodies' mass, inertia, damping, drag, center of mass and tags
 export into decompiled models; joint motors do not. Not parsed anywhere: constraints
-(`m_constraints2`) and the `FeModel` cloth/softbody block; both are visible only in the raw
-text dump. Surface properties are resolved by name only; their physical values (friction,
-density, sounds) are not consumed or exported. KeyValues blocks over 64 MiB, such as the
-PHYS block of gigabyte-class maps, are too large to show as text; the viewer offers **Save
-as text...** for them instead
+(`m_constraints2`), visible only in the raw text dump. The `FeModel` cloth/softbody block is
+decompiled into the model's cloth nodes (see [Models](#models-vmdl)). Surface properties are
+resolved by name only; their physical values (friction, density, sounds) are not consumed or
+exported. KeyValues blocks over 64 MiB, such as the PHYS block of gigabyte-class maps, are too
+large to show as text; the viewer offers **Save as text...** for them instead
 ([#840](https://github.com/ValveResourceFormat/ValveResourceFormat/issues/840)).
 
 ## Particles (vpcf)

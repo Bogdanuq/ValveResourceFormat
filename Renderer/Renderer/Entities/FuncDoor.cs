@@ -5,8 +5,8 @@ namespace ValveResourceFormat.Renderer.Entities;
 /// <summary>
 /// <c>func_door</c>. A brush that slides open along its <c>movedir</c> and back again, Source's
 /// <c>CBaseDoor</c>. It opens when used, told to, or walked into, and a walk into it can be passed on to the
-/// doors it chains to. Not simulated: the sounds, the <c>master</c> that has to be triggered first, the
-/// blocking behaviour that reverses a door onto whoever stands in it, and the door groups that open together.
+/// doors it chains to. Something in its way turns it around. Not simulated: the sounds, the <c>master</c>
+/// that has to be triggered first, the damage it deals whatever blocks it, and the door groups that open together.
 /// </summary>
 public class FuncDoor : BaseToggle
 {
@@ -19,6 +19,12 @@ public class FuncDoor : BaseToggle
         /// open and fully closed outputs swap too.
         /// </summary>
         StartsOpen = 1,
+
+        /// <summary>
+        /// Non-solid to the player, which also means the player can never block it: a player in its way is
+        /// carried the whole push, through anything else if need be. Only the never-blocking part is modeled.
+        /// </summary>
+        NonSolidToPlayer = 4,
 
         /// <summary>Things pass straight through it.</summary>
         Passable = 8,
@@ -68,7 +74,10 @@ public class FuncDoor : BaseToggle
     /// <summary>Gets the seconds the door stays open before closing; a negative wait keeps it open.</summary>
     public float Wait { get; private set; }
 
-    /// <summary>Gets whether the door closes whatever stands in it, the <c>forceclosed</c> keyvalue.</summary>
+    /// <summary>
+    /// Gets whether a blocked door holds its course rather than turning back, the <c>forceclosed</c> keyvalue.
+    /// It still cannot move through what blocks it.
+    /// </summary>
     public bool ForceClosed { get; private set; }
 
     /// <summary>Gets where the door is in its travel.</summary>
@@ -87,7 +96,7 @@ public class FuncDoor : BaseToggle
     protected BaseEntity? LastActivator { get; private set; }
 
     /// <inheritdoc/>
-    protected override bool PusherForcesThrough => ForceClosed;
+    protected override bool IsUnblockableByPlayer => HasSpawnFlags(SpawnFlag.NonSolidToPlayer);
 
     private bool StaysOpen => HasSpawnFlags(SpawnFlag.Toggle);
 
@@ -147,7 +156,7 @@ public class FuncDoor : BaseToggle
     {
         if (KeyValues.GetInt32Property("spawnpos") == 1 || HasSpawnFlags(SpawnFlag.StartsOpen))
         {
-            Teleport(PositionOpen, null);
+            JumpTo(PositionOpen, Angles);
             State = ToggleState.AtTop;
             return;
         }
@@ -163,7 +172,7 @@ public class FuncDoor : BaseToggle
     /// Source's <c>SetToggleState</c>.
     /// </summary>
     /// <param name="atOpenEnd">Whether to the open end rather than the closed one.</param>
-    protected virtual void JumpToEnd(bool atOpenEnd) => Teleport(atOpenEnd ? PositionOpen : PositionClosed, null);
+    protected virtual void JumpToEnd(bool atOpenEnd) => JumpTo(atOpenEnd ? PositionOpen : PositionClosed, Angles);
 
     /// <inheritdoc/>
     public override void MoveDone()
@@ -269,6 +278,57 @@ public class FuncDoor : BaseToggle
                 door.OnTouch(other);
                 door.isChaining = false;
             }
+        }
+    }
+
+    /// <inheritdoc/>
+    protected override void OnStartBlocked(BaseEntity blocker)
+        => EntitySystem.TriggerOutput(this, State == ToggleState.GoingDown ? "OnBlockedClosing" : "OnBlockedOpening", blocker);
+
+    /// <inheritdoc/>
+    protected override void OnEndBlocked()
+        => EntitySystem.TriggerOutput(this, State == ToggleState.GoingDown ? "OnUnblockedClosing" : "OnUnblockedOpening", this);
+
+    /// <summary>
+    /// Runs on every tick something blocks the door. Source's <c>CBaseDoor::Blocked</c>: unless it closes
+    /// through or never comes back by itself, the door turns around, and so does every door sharing its name.
+    /// </summary>
+    protected override void OnBlocked(BaseEntity blocker)
+    {
+        if (ForceClosed)
+        {
+            return;
+        }
+
+        if (Wait >= 0f)
+        {
+            Reverse();
+        }
+
+        if (string.IsNullOrEmpty(TargetName))
+        {
+            return;
+        }
+
+        foreach (var entity in EntitySystem.FindAllByTargetName(TargetName))
+        {
+            if (entity != this && entity is FuncDoor { Wait: >= 0f } door)
+            {
+                door.Reverse();
+            }
+        }
+    }
+
+    // A door that was closing opens again, anything else closes
+    private void Reverse()
+    {
+        if (State == ToggleState.GoingDown)
+        {
+            GoUp();
+        }
+        else
+        {
+            GoDown();
         }
     }
 

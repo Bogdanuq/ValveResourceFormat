@@ -41,14 +41,14 @@ public sealed class TriggerTeleport : BaseTrigger
             return;
         }
 
-        if (EntitySystem.FindByTargetName(targetName, Scene) is not { } target)
+        if (EntitySystem.FindByTargetName(targetName) is not { } target)
         {
             EntitySystem.Logger.LogWarning("trigger_teleport '{TargetName}' target '{Target}' was not found", TargetName, targetName);
             return;
         }
 
         // Not the origin keyvalue, which ignores the spawn group placement
-        destination = (target.RigidTransform.Translation, target.Angles);
+        destination = (target.WorldOrigin, target.WorldAngles);
     }
 
     /// <inheritdoc/>

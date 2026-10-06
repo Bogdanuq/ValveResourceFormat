@@ -285,19 +285,13 @@ namespace GUI.Controls
                 // Find workshop content
                 try
                 {
-                    var workshopManifest = Path.Join(steamPath, "workshop", $"appworkshop_{appID}.acf");
+                    var workshopManifest = GameFolderLocator.ReadSteamKeyValues(Path.Join(steamPath, "workshop", $"appworkshop_{appID}.acf"));
 
-                    if (File.Exists(workshopManifest))
+                    if (workshopManifest != null && GameFolderLocator.GetChild(workshopManifest, "WorkshopItemsInstalled") is { } installedItems)
                     {
                         var kvDeserializer = KVSerializer.Create(KVSerializationFormat.KeyValues1Text);
-                        KVObject workshopInfo;
 
-                        using (var stream = File.OpenRead(workshopManifest))
-                        {
-                            workshopInfo = kvDeserializer.Deserialize(stream);
-                        }
-
-                        foreach (var item in workshopInfo["WorkshopItemsInstalled"].Children)
+                        foreach (var item in installedItems.Children)
                         {
                             var addonPath = Path.Join(steamPath, "workshop", "content", appID.ToString(CultureInfo.InvariantCulture), item.Key);
                             var publishDataPath = Path.Join(addonPath, "publish_data.txt");
@@ -406,13 +400,9 @@ namespace GUI.Controls
             // to instantly load their icons before rendering the list
             foreach (var path in Settings.Config.RecentFiles.Concat(Settings.Config.BookmarkedFiles))
             {
-                foreach (var game in SteamGames)
+                if (GameFolderLocator.FindSteamGameContainingPath(path, SteamGames) is { } game)
                 {
-                    if (path.StartsWith(game.GamePath, StringComparison.OrdinalIgnoreCase))
-                    {
-                        await GetOrLoadAppImage(game.AppID, libraryAssetsKv, libraryCachePath).ConfigureAwait(false);
-                        break;
-                    }
+                    await GetOrLoadAppImage(game.AppID, libraryAssetsKv, libraryCachePath).ConfigureAwait(false);
                 }
             }
 
@@ -618,21 +608,13 @@ namespace GUI.Controls
                     }
                 }
 
-                foreach (var game in SteamGames)
+                if (GameFolderLocator.FindSteamGameContainingPath(path, SteamGames) is { } game)
                 {
-                    if (path.StartsWith(game.GamePath, StringComparison.OrdinalIgnoreCase))
+                    pathDisplay = $"[{game.AppName}] {pathDisplay.AsSpan(Math.Min(game.GamePath.Length, pathDisplay.Length))}";
+
+                    if (isVpk && !AppIcons.GameIcons.TryGetValue(game.AppID, out imageIndexGame))
                     {
-                        pathDisplay = $"[{game.AppName}] {pathDisplay.AsSpan(game.GamePath.Length)}";
-
-                        if (isVpk)
-                        {
-                            if (!AppIcons.GameIcons.TryGetValue(game.AppID, out imageIndexGame))
-                            {
-                                imageIndexGame = -1;
-                            }
-                        }
-
-                        break;
+                        imageIndexGame = -1;
                     }
                 }
 

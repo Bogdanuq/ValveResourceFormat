@@ -207,7 +207,7 @@ public class Rubikon
 
         /// <summary>
         /// Gets or sets the entity this hit belongs to, for sweeps that fold brush entities in: the
-        /// entity whose collider was struck, or the worldspawn for static world geometry, as the engine
+        /// entity whose collider was struck, or the world entity for static world geometry, as the engine
         /// reports it. Null when the sweep did not carry entity identity at all.
         /// </summary>
         public Entities.BaseEntity? HitEntity { get; set; }
@@ -270,7 +270,7 @@ public class Rubikon
         }
     }
 
-    private static bool IsInvalidRay(Vector3 from, Vector3 to)
+    internal static bool IsInvalidRay(Vector3 from, Vector3 to)
     {
         return Vector3.DistanceSquared(from, to) < Epsilon * Epsilon;
     }
@@ -1071,6 +1071,8 @@ public class Rubikon
 
     internal const string GrenadeCollisionName = "grenade";
 
+    internal const string LadderCollisionName = "ladder";
+
     internal const string Cs2PlayerCollisionFilter = "player";
 
     /// <summary>Which shapes a query collides with, decided from each shape's interaction tags.</summary>
@@ -1111,6 +1113,11 @@ public class Rubikon
         if (ContainsString(interactExclude, collisionName))
         {
             return true;
+        }
+
+        if (collisionName == LadderCollisionName)
+        {
+            return !ContainsString(interactAs, LadderCollisionName);
         }
 
         // Untagged geometry stops everything; a tagged shape only stops what its tags name.

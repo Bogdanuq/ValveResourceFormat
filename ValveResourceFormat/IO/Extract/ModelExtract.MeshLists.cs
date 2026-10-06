@@ -13,6 +13,18 @@ namespace ValveResourceFormat.IO;
 /// </summary>
 partial class ModelExtract
 {
+    /// <summary>
+    /// Influences per vertex a render mesh gets without a <c>RenderMeshMarkup</c>, so a mesh skinned to more
+    /// needs one written out.
+    /// </summary>
+    private const int DefaultBlendWeightsPerVertex = 4;
+
+    /// <summary>
+    /// The <c>blend_weights_per_vertex</c> to write for such a mesh. It is a cap: the compiler uses the
+    /// actual maximum up to it.
+    /// </summary>
+    private const string WideBlendWeightsPerVertex = "8";
+
     private void AddRenderMeshNodes(ModelDocLists lists)
     {
         if (RenderMeshesToExtract.Count != 0)
@@ -24,6 +36,14 @@ partial class ModelExtract
                     ("name", renderMesh.Name),
                     ("filename", renderMesh.FileName)
                 );
+
+                if (renderMesh.Mesh.BoneWeightCount > DefaultBlendWeightsPerVertex)
+                {
+                    renderMeshFile.Add("children", MakeArray(MakeNode(
+                        "RenderMeshMarkup",
+                        ("blend_weights_per_vertex", WideBlendWeightsPerVertex)
+                    )));
+                }
 
                 if (renderMesh.ImportFilter != default)
                 {

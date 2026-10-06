@@ -1004,6 +1004,8 @@ internal abstract partial class GLBaseControl : IDisposable, IMessageFilter
         MainFramebuffer.Initialize();
 
         OnGLLoad();
+
+        RendererContext.ShaderLoader.LinkLoadedShaders();
     }
 
     /// <summary>Reports how long the buffer swap blocked the render thread.</summary>

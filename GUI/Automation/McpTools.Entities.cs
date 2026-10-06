@@ -214,7 +214,7 @@ internal sealed partial class McpTools
     private static Vector3 RenderedPosition(MapEntity entity, BaseEntity? instance)
     {
         var origin = entity.Data.GetVector3Property("origin");
-        var placement = instance?.ParentTransform ?? entity.Group?.Transform ?? Matrix4x4.Identity;
+        var placement = instance?.SpawnTransform ?? entity.Group?.Transform ?? Matrix4x4.Identity;
         var toViewer = instance?.Scene.ToViewerWorld ?? entity.Group?.Scene.ToViewerWorld ?? Matrix4x4.Identity;
 
         return Vector3.Transform(Vector3.Transform(origin, placement), toViewer);

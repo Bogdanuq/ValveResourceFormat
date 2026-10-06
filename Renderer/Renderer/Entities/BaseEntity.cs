@@ -15,10 +15,11 @@ namespace ValveResourceFormat.Renderer.Entities;
 /// nodes go into.
 /// </summary>
 /// <param name="Data">The entity's keyvalues, as authored in the map.</param>
-/// <param name="ParentTransform">Transform of the spawner (a template, or identity for map entities).</param>
+/// <param name="ParentTransform">Transform of the spawner (a template or spawn group placement, identity for map entities), applied to the authored origin and angles.</param>
 /// <param name="LayerName">Visibility layer for this entity and every node it creates.</param>
 /// <param name="Scene">The scene the entity's nodes render into.</param>
-public readonly record struct EntitySpawnInfo(Entity Data, Matrix4x4 ParentTransform, string? LayerName, Scene Scene);
+/// <param name="NameFixup">What the spawning group puts in place of the markers in the entity's names.</param>
+public readonly record struct EntitySpawnInfo(Entity Data, Matrix4x4 ParentTransform, string? LayerName, Scene Scene, EntityNameFixup NameFixup);
 
 /// <summary>
 /// The base of the simulated entity hierarchy, Source's <c>CBaseEntity</c>. It carries the origin and
@@ -47,7 +48,7 @@ public abstract class BaseEntity
     /// Gets where the entity is in the world at its current tick, without its <see cref="EntityScale"/>:
     /// the placement of anything the scale must not stretch, such as collision or a baked volume.
     /// </summary>
-    public Matrix4x4 RigidTransform => EntityTransformHelper.ToRigidTransformationMatrix(Angles, Origin) * ParentTransform;
+    public Matrix4x4 RigidTransform => EntityTransformHelper.ToRigidTransformationMatrix(angles, origin) * GetParentFrame();
 
     /// <summary>Gets the visibility layer this entity's nodes belong to.</summary>
     public string? LayerName { get; }
@@ -57,16 +58,25 @@ public abstract class BaseEntity
 
     /// <summary>
     /// Gets the entity's keyvalues as authored in the map, or <see langword="null"/> for an entity created
-    /// at runtime rather than loaded from one. Use <see cref="KeyValues"/> from a class that only ever
-    /// comes from a map.
+    /// at runtime rather than loaded from one. Names in it still carry their fixup markers; read
+    /// <see cref="SpawnData"/> for the names the entity was spawned with.
     /// </summary>
     public Entity? Data { get; }
 
     /// <summary>
-    /// Gets the map keyvalues this entity was authored with. Throws for an entity created at runtime,
-    /// which has none; read <see cref="Data"/> instead in a class that can be either.
+    /// Gets the keyvalues the entity was spawned with: <see cref="Data"/> with <see cref="NameFixup"/>
+    /// applied to every name in it, or <see langword="null"/> for an entity created at runtime.
     /// </summary>
-    protected Entity KeyValues => Data
+    public Entity? SpawnData { get; }
+
+    /// <summary>Gets what the spawning group put in place of the markers in this entity's names.</summary>
+    public EntityNameFixup NameFixup { get; } = EntityNameFixup.None;
+
+    /// <summary>
+    /// Gets the keyvalues this entity was spawned with. Throws for an entity created at runtime, which has
+    /// none; read <see cref="SpawnData"/> instead in a class that can be either.
+    /// </summary>
+    protected Entity KeyValues => SpawnData
         ?? throw new InvalidOperationException($"'{Classname}' was created at runtime and has no map keyvalues");
 
     /// <summary>Gets the entity's <c>classname</c>.</summary>
@@ -75,11 +85,14 @@ public abstract class BaseEntity
     /// <summary>Gets the entity's <c>targetname</c>, the name entity I/O addresses it by.</summary>
     public string? TargetName { get; }
 
-    /// <summary>Gets the entity's <c>spawnflags</c>.</summary>
-    public uint SpawnFlags { get; }
+    /// <summary>Gets the entity's <c>spawnflags</c>, which some entities change at runtime as Source's do.</summary>
+    public uint SpawnFlags { get; protected set; }
 
-    /// <summary>Gets the transform of whatever spawned this entity; identity for plain map entities.</summary>
-    public Matrix4x4 ParentTransform { get; }
+    /// <summary>
+    /// Gets the placement of whatever spawned this entity, a template or a spawn group, already applied to its
+    /// pose. Identity for plain map entities.
+    /// </summary>
+    public Matrix4x4 SpawnTransform { get; }
 
     /// <summary>
     /// Gets or sets the owning entity, Source's <c>m_hOwnerEntity</c>. Null only on the root <see cref="WorldEntity"/>.
@@ -98,22 +111,45 @@ public abstract class BaseEntity
     /// </summary>
     internal bool IsMoveParentResolved { get; private set; }
 
+    // What the move parent frame is: the parent entity, or an attachment point or bone of its model
+    private enum ParentFrameKind
+    {
+        None,
+        Entity,
+        Attachment,
+    }
+
+    private ParentFrameKind parentFrameKind;
+    private string? parentAttachmentName;
+
+    // Entities whose pose is relative to this one
+    private readonly List<BaseEntity> moveChildren = [];
+
+    // What blocked the last push, Source's m_pBlocker
+    private BaseEntity? currentBlocker;
+
+    // Taken out of traces while its own push is checked, Source's UnlinkPusherList
+    private bool isCollisionSuspended;
+
+    // Source's sv_stepsize, which pads the push's search volume above the pushers
+    private const float PushStepSize = 18f;
+
     /// <summary>
-    /// Resolves <c>parentname</c> once everything has spawned, and hangs the entity's nodes off the parent's
-    /// attachment or bone when it names one.
+    /// Resolves <c>parentname</c> once everything has spawned, and turns the authored world pose into one
+    /// local to the parent, the way the engine does at spawn.
     /// </summary>
     internal void ResolveMoveParent()
     {
         IsMoveParentResolved = true;
 
-        var parentName = Data?.GetStringProperty("parentname");
+        var parentName = SpawnData?.GetStringProperty("parentname");
 
         if (string.IsNullOrEmpty(parentName))
         {
             return;
         }
 
-        var attachmentName = Data?.GetStringProperty("parentattachmentname");
+        var attachmentName = SpawnData?.GetStringProperty("parentattachmentname");
 
         // "name,attachment" addresses an attachment point as part of the parent
         var comma = parentName.IndexOf(',', StringComparison.Ordinal);
@@ -128,7 +164,7 @@ public abstract class BaseEntity
             parentName = parentName[..comma];
         }
 
-        foreach (var candidate in EntitySystem.FindAllByTargetName(parentName, Scene))
+        foreach (var candidate in EntitySystem.FindAllByTargetNameInWorldGroup(parentName, Scene))
         {
             if (candidate != this)
             {
@@ -137,40 +173,63 @@ public abstract class BaseEntity
             }
         }
 
-        if (!string.IsNullOrEmpty(attachmentName))
-        {
-            AttachToParentModel(attachmentName);
-        }
-    }
-
-    /// <summary>
-    /// Applies the move parent's motion this tick onto this entity: into the parent's old frame, out
-    /// through its new one, so the child keeps its relative pose while also free to move on its own.
-    /// </summary>
-    internal void FollowMoveParent()
-    {
-        if (isAttachedToParentModel
-            || MoveParent is not { IsRemoved: false } parent
-            || (parent.previousOrigin == parent.Origin && parent.previousAngles == parent.Angles))
+        if (MoveParent == null)
         {
             return;
         }
 
-        var previous = EntityTransformHelper.ToRigidTransformationMatrix(parent.previousAngles, parent.previousOrigin);
+        // Its world pose has to be final before this one is made relative to it
+        EntitySystem.ResolveMoveParentChain(MoveParent);
 
-        if (!Matrix4x4.Invert(previous, out var previousInverse))
+        var data = Data!;
+        var useLocalOffset = data.GetBooleanProperty("uselocaloffset");
+        var authoredLocalOrigin = data.GetVector3Property("local.origin");
+        var authoredLocalAngles = data.GetVector3Property("local.angles");
+
+        if (!string.IsNullOrEmpty(attachmentName) && attachmentName != "!absorigin"
+            && MoveParent is BaseModelEntity { ModelNode: { } parentModel } && parentModel.HasAttachmentOrBone(attachmentName))
         {
-            return;
+            parentFrameKind = ParentFrameKind.Attachment;
+            parentAttachmentName = attachmentName;
+
+            // Snapped onto the attachment unless an offset from it was authored
+            if (useLocalOffset)
+            {
+                SetPose(authoredLocalOrigin, authoredLocalAngles);
+            }
+            else
+            {
+                SetPose(Vector3.Zero, Vector3.Zero);
+            }
+
+            AttachToParentModel(parentModel);
+        }
+        else
+        {
+            if (!string.IsNullOrEmpty(attachmentName) && attachmentName != "!absorigin")
+            {
+                EntitySystem.Logger.LogWarning("{Classname} '{TargetName}' is parented to {AttachmentName} on '{ParentName}', which has no such attachment or bone",
+                    Classname, TargetName, attachmentName, MoveParent.TargetName);
+            }
+
+            var world = RigidTransform;
+
+            parentFrameKind = ParentFrameKind.Entity;
+
+            if (useLocalOffset)
+            {
+                SetPose(authoredLocalOrigin, authoredLocalAngles);
+            }
+            else if (!data.GetBooleanProperty("positioninlocalspace"))
+            {
+                // Keeps the authored world pose, now relative to the parent
+                SetWorldPose(world);
+            }
         }
 
-        var current = EntityTransformHelper.ToRigidTransformationMatrix(parent.Angles, parent.Origin);
-        var world = EntityTransformHelper.ToRigidTransformationMatrix(Angles, Origin);
+        MoveParent.moveChildren.Add(this);
 
-        var moved = world * previousInverse * current;
-
-        SetOriginAndAngles(
-            moved.Translation,
-            EntityTransformHelper.ToEulerAngles(Quaternion.CreateFromRotationMatrix(moved)));
+        SnapInterpolation();
     }
 
     /// <summary>Gets the authored <c>scales</c>, which movement never changes.</summary>
@@ -182,21 +241,43 @@ public abstract class BaseEntity
     /// </summary>
     public string? ModelName { get; protected set; }
 
-    /// <summary>Gets or sets the origin. Setting it rebuilds <see cref="Transform"/>.</summary>
+    /// <summary>
+    /// Gets or sets the origin relative to the move parent frame, the world origin for an entity without one.
+    /// Source's <c>m_vecOrigin</c>, which movement works in. Setting it rebuilds <see cref="Transform"/>.
+    /// </summary>
     public Vector3 Origin
     {
         get => origin;
         set => SetOriginAndAngles(value, angles);
     }
 
-    /// <summary>Gets or sets the orientation as a QAngle (pitch, yaw, roll) in degrees. Setting it rebuilds <see cref="Transform"/>.</summary>
+    /// <summary>
+    /// Gets or sets the orientation relative to the move parent frame, as a QAngle (pitch, yaw, roll) in
+    /// degrees. Source's <c>m_angRotation</c>. Setting it rebuilds <see cref="Transform"/>.
+    /// </summary>
     public Vector3 Angles
     {
         get => angles;
         set => SetOriginAndAngles(origin, value);
     }
 
-    /// <summary>Gets or sets the linear velocity in units per second.</summary>
+    /// <summary>Gets or sets the world origin at the current tick. Setting it moves the local origin to match.</summary>
+    public Vector3 WorldOrigin
+    {
+        get => parentFrameKind == ParentFrameKind.None ? origin : RigidTransform.Translation;
+        set => SetWorldOriginAndAngles(value, WorldAngles);
+    }
+
+    /// <summary>Gets or sets the world orientation at the current tick. Setting it turns the local angles to match.</summary>
+    public Vector3 WorldAngles
+    {
+        get => parentFrameKind == ParentFrameKind.None
+            ? angles
+            : EntityTransformHelper.ToEulerAngles(Quaternion.CreateFromRotationMatrix(RigidTransform));
+        set => SetWorldOriginAndAngles(WorldOrigin, value);
+    }
+
+    /// <summary>Gets or sets the linear velocity in units per second, in the move parent frame.</summary>
     public Vector3 Velocity { get; set; }
 
     /// <summary>
@@ -213,11 +294,17 @@ public abstract class BaseEntity
     public float NextThink { get; private set; } = -1f;
 
     /// <summary>
-    /// Gets the time <see cref="MoveDone"/> next runs, in <see cref="EntitySystem.CurrentTime"/> seconds,
-    /// or -1 when no move is scheduled. Source's <c>m_flMoveDoneTime</c>, how pushing entities step their
-    /// movement state machines.
+    /// Gets the time <see cref="MoveDone"/> next runs on the entity's own move clock, or -1 when no move is
+    /// scheduled. Source's <c>m_flMoveDoneTime</c>, how pushing entities step their movement state machines.
     /// </summary>
+    /// <remarks>
+    /// The clock is Source's <c>m_flLocalTime</c>. It only runs while a move is pending and winds back when
+    /// a push is blocked, so a move lasts exactly as long as it was scheduled for, whenever in the tick it
+    /// was scheduled.
+    /// </remarks>
     public float MoveDoneTime { get; private set; } = -1f;
+
+    private float localTime;
 
     /// <summary>Gets whether this entity has been removed from the world and is awaiting cleanup.</summary>
     public bool IsRemoved { get; private set; }
@@ -259,8 +346,17 @@ public abstract class BaseEntity
         }
     } = true;
 
-    /// <summary>Gets whether the entity currently takes part in collision traces.</summary>
-    public bool IsCollidable => IsSolid && !IsTrigger && Collider is { IsEmpty: false } && !IsRemoved;
+    /// <summary>
+    /// Gets whether the entity currently takes part in collision traces, which are only made in the main
+    /// world group's physics world.
+    /// </summary>
+    public bool IsCollidable => IsSolid && !IsTrigger && Collider is { IsEmpty: false } && !IsRemoved && !isCollisionSuspended && IsInQueryWorld;
+
+    /// <summary>
+    /// Gets whether the entity's collision is in the physics world of the main world group, the only one
+    /// traces are made against. A 3D sky's entities collide in a physics world of their own.
+    /// </summary>
+    internal bool IsInQueryWorld => Scene.WorldGroup == null;
 
     /// <summary>Gets the entities currently inside this one's volume.</summary>
     public IReadOnlyCollection<BaseEntity> TouchingEntities => touching;
@@ -277,6 +373,9 @@ public abstract class BaseEntity
     private Vector3 previousAngles;
     private bool isInterpolating;
 
+    // Transform without the scale, where children following this entity are drawn from
+    private Matrix4x4 renderFrame = Matrix4x4.Identity;
+
     /// <summary>
     /// Initializes the entity from its keyvalues, reading the properties every entity has.
     /// </summary>
@@ -285,9 +384,10 @@ public abstract class BaseEntity
         EntitySystem = system;
         Scene = spawnInfo.Scene;
         Data = spawnInfo.Data;
-        ParentTransform = spawnInfo.ParentTransform;
-
-        var data = spawnInfo.Data;
+        NameFixup = spawnInfo.NameFixup;
+        SpawnData = NameFixup.Apply(spawnInfo.Data);
+        SpawnTransform = spawnInfo.ParentTransform;
+        var data = SpawnData;
 
         Classname = data.GetStringProperty("classname") ?? string.Empty;
         TargetName = data.TargetName;
@@ -296,8 +396,14 @@ public abstract class BaseEntity
 
         ModelName = data.GetStringProperty("model");
 
-        origin = data.GetVector3Property("origin");
-        angles = data.GetVector3Property("angles");
+        // Authored in the world of the map they were compiled in, and moved with whatever placed it
+        var authored = EntityTransformHelper.ToRigidTransformationMatrix(data.GetVector3Property("angles"), data.GetVector3Property("origin"))
+            * spawnInfo.ParentTransform;
+
+        origin = authored.Translation;
+        angles = spawnInfo.ParentTransform.IsIdentity
+            ? data.GetVector3Property("angles")
+            : EntityTransformHelper.ToEulerAngles(Quaternion.CreateFromRotationMatrix(authored));
         previousOrigin = origin;
         previousAngles = angles;
 
@@ -326,8 +432,8 @@ public abstract class BaseEntity
     {
         EntitySystem = system;
         Scene = scene;
-        ParentTransform = Matrix4x4.Identity;
         EntityScale = Vector3.One;
+        SpawnTransform = Matrix4x4.Identity;
 
         Classname = classname;
 
@@ -520,14 +626,16 @@ public abstract class BaseEntity
     /// </summary>
     public virtual void Teleport(Vector3 origin, Vector3? angles)
     {
-        Origin = origin;
-
-        if (angles is { } newAngles)
-        {
-            Angles = newAngles;
-        }
+        SetWorldOriginAndAngles(origin, angles ?? WorldAngles);
 
         // A teleport is not movement, so it must not be interpolated across
+        SnapInterpolation();
+    }
+
+    /// <summary>Jumps to a pose in the move parent frame without interpolating across, like a teleport.</summary>
+    protected void JumpTo(Vector3 origin, Vector3 angles)
+    {
+        SetOriginAndAngles(origin, angles);
         SnapInterpolation();
     }
 
@@ -606,17 +714,26 @@ public abstract class BaseEntity
     /// <c>SetMoveDoneTime</c>. A negative delay cancels the scheduled move.
     /// </summary>
     public void SetMoveDoneTime(float delay)
-        => MoveDoneTime = delay >= 0f ? EntitySystem.CurrentTime + delay : -1f;
+        => MoveDoneTime = delay >= 0f ? localTime + delay : -1f;
 
     /// <summary>
     /// Runs one entity tick: think, move, then move-done, the order Source's pusher physics uses.
     /// </summary>
+    // The state this tick starts from is the one frames interpolate out of. Taken for every entity before
+    // any of them moves, so a child sees where its parent started.
+    internal void BeginTick()
+    {
+        previousOrigin = origin;
+        previousAngles = angles;
+    }
+
+    // Whether the entity moved in the world this tick, by itself or by riding its move parent
+    private bool MovedThisTick()
+        => previousOrigin != origin || previousAngles != angles
+        || (parentFrameKind == ParentFrameKind.Entity && MoveParent!.MovedThisTick());
+
     internal void Simulate(float tickInterval)
     {
-        // The state this tick starts from is the one frames interpolate out of
-        previousOrigin = Origin;
-        previousAngles = Angles;
-
         if (NextThink > 0f && NextThink <= EntitySystem.CurrentTime)
         {
             NextThink = -1f;
@@ -635,7 +752,7 @@ public abstract class BaseEntity
 
         if (MoveDoneTime > 0f)
         {
-            var remaining = MoveDoneTime - (EntitySystem.CurrentTime - tickInterval);
+            var remaining = MoveDoneTime - localTime;
 
             if (remaining < moveTime)
             {
@@ -645,15 +762,26 @@ public abstract class BaseEntity
 
         PhysicsSimulate(moveTime);
 
-        if (IsPusher && (previousOrigin != Origin || previousAngles != Angles))
+        if (MoveDoneTime > 0f)
         {
-            PushPlayer(moveTime);
+            localTime += moveTime;
         }
 
-        if (MoveDoneTime > 0f && MoveDoneTime <= EntitySystem.CurrentTime)
+        // Only for its own motion, as what it rode was pushed with the parent already
+        if (IsPusher && !MovesWithoutPushing && (previousOrigin != origin || previousAngles != angles))
         {
-            MoveDoneTime = -1f;
+            UpdateBlocker(PushPlayer(moveTime));
+        }
+
+        if (MoveDoneTime > 0f && localTime >= MoveDoneTime)
+        {
             MoveDone();
+
+            // Unless the callback scheduled another move
+            if (localTime >= MoveDoneTime)
+            {
+                MoveDoneTime = -1f;
+            }
         }
     }
 
@@ -677,10 +805,10 @@ public abstract class BaseEntity
         var turn = AngularVelocity * tickInterval;
 
         SetOriginAndAngles(
-            Origin + Velocity * tickInterval,
-            AngularVelocity == Vector3.Zero ? Angles
-                : TurnsByAngleComponents ? Angles + turn
-                : TurnBody(Angles, turn));
+            origin + Velocity * tickInterval,
+            AngularVelocity == Vector3.Zero ? angles
+                : TurnsByAngleComponents ? angles + turn
+                : TurnBody(angles, turn));
     }
 
     /// <summary>
@@ -691,196 +819,440 @@ public abstract class BaseEntity
     protected virtual bool TurnsByAngleComponents => false;
 
     /// <summary>
-    /// Gets whether this entity shoves the player out of its way as it moves, Source's
-    /// <c>MOVETYPE_PUSH</c>. Doors, buttons and rotating brushes opt in.
+    /// Gets whether this entity pushes the player out of its way as it moves, Source's
+    /// <c>MOVETYPE_PUSH</c>. Doors, buttons, rotating brushes and trains opt in.
     /// </summary>
     protected internal virtual bool IsPusher => false;
 
     /// <summary>
-    /// Gets whether a blocked push crushes on rather than holding, the <c>forceclosed</c> behaviour.
+    /// Gets whether the player can never block this pusher, Source's <c>FL_UNBLOCKABLE_BY_PLAYER</c>. The
+    /// player is moved the whole way, through the world if need be, and the pusher keeps going.
     /// </summary>
-    protected virtual bool PusherForcesThrough => false;
+    protected virtual bool IsUnblockableByPlayer => false;
 
     /// <summary>
-    /// The engine's pusher physics, run on the tick right after this entity's own move: a rider is
-    /// carried by the exact displacement the tick produced under them, a player the new pose overlaps
-    /// is shoved along the motion, and a push that cannot resolve blocks the pusher. Discrete by
-    /// design - the collider only ever moves here, so this is the only moment penetration can appear,
-    /// and the depth is bounded by what the pose swept this tick. The displacement is reserved rather
-    /// than teleported: the controller walks it as real motion spread over the following interval.
+    /// Gets or sets whether this pusher moves through whatever is in its way without pushing it or being
+    /// blocked, the <c>MoveWithoutPushingBlockers</c> attribute.
     /// </summary>
-    private void PushPlayer(float moveTime)
+    protected bool MovesWithoutPushing { get; set; }
+
+    /// <summary>
+    /// Gets whether a player in the way of anything parented under this entity is pushed the way the game
+    /// pushes them off trains: slid along the push and lifted out of whatever it left them in, and never
+    /// able to block it.
+    /// </summary>
+    protected virtual bool PushesPlayerAsTrain => false;
+
+    /// <summary>
+    /// Gets whether this entity collides as a physics mesh, Source's <c>SOLID_VPHYSICS</c>, as nearly every
+    /// model does. A turning one pushes the player by the motion of the corner of their box that leads
+    /// into the turn, rather than by the motion of their origin.
+    /// </summary>
+    protected virtual bool HasVPhysicsSolid => true;
+
+    /// <summary>
+    /// The engine's pusher physics, run on the tick right after this entity's own move. Everything
+    /// parented to the pusher moves with it as one body. A player standing on any of it, or that the
+    /// new pose overlaps, is moved by the whole push, cut short only by whatever else is in the way. When
+    /// that leaves them inside something, they block the pusher, which takes its motion back.
+    /// </summary>
+    /// <returns>What blocked the push, or <see langword="null"/>.</returns>
+    private PlayerEntity? PushPlayer(float moveTime)
     {
         if (EntitySystem.Player is not { IsRemoved: false } player
             || !player.Controller.IsActive
-            || Collider is not { IsEmpty: false } collider
-            || !IsSolid || IsTrigger || Scene != player.Scene
-            || !player.TryGetTouchBounds(out var center, out var halfExtents))
+            || Scene.WorldGroup != player.Scene.WorldGroup)
         {
-            return;
+            return null;
         }
 
         var controller = player.Controller;
-        var carried = Vector3.Zero;
+        var center = controller.HullCenter;
+        var halfExtents = controller.HullHalfExtents;
 
-        // Riders first: standing on the surface means moving with it, by the transform delta at the
-        // feet rather than a velocity integrated over frames that never quite lands on it. Only with
-        // the hull center over the surface: the ground probe is hull-sized and grounds on a sliver
-        // at the rim, and carrying that contact rubber-bands a player walking off the edge into
-        // orbiting with the mover instead of leaving it.
-        if (controller.GroundEntity == this
-            && collider.TraceRay(center, center - new Vector3(0, 0, halfExtents.Z + 2f), Rubikon.Cs2PlayerCollisionFilter) is { Hit: true })
+        List<BaseEntity> pushers = [];
+        CollectPushers(pushers);
+
+        // A turn is pushed as one even when the origin moves too, and the search volume only covers
+        // what the origin's own travel swept
+        var motion = GetTickMotion(out var current);
+        var rotational = previousAngles != angles;
+        var sweep = DisplacementAt(motion, current.Translation);
+
+        if (!IsInPushersWay(pushers, controller.GroundEntity, center, halfExtents, sweep))
         {
-            // Anchored at the fully corrected position: the walked-off remainder still owed keeps
-            // position + pending on the exact carried trajectory, so a rotation's carry cannot
-            // accumulate radial drift from the walk-off lag
-            var anchor = controller.Position + controller.PendingPush;
-
-            carried = controller.Push(TickDisplacementAt(anchor));
-            center += carried;
+            return null;
         }
 
-        // Shrunk like the movement code's own overlap probes: the SAT test is exact, and a hull
-        // resting its SurfaceEpsilon gap away reads as touching at times, which would jitter false pushes
-        const float ProbeShrink = Rubikon.SurfaceEpsilon / 2f;
+        var push = rotational ? RotationalPushAt(motion, center, halfExtents) : DisplacementAt(motion, center);
+        Vector3 moved;
 
-        var probeExtents = halfExtents - new Vector3(ProbeShrink);
-
-        if (!collider.OverlapsVolume(center, probeExtents))
+        if (RootMoveParent.PushesPlayerAsTrain)
         {
-            return;
+            moved = PushPlayerAsTrain(controller, pushers, center, push, rotational);
         }
-
-        // The shove follows the motion at the hull, kept horizontal so a door pushes rather than
-        // lifts or buries
-        var motion = TickDisplacementAt(center);
-        var direction = new Vector3(motion.X, motion.Y, 0f);
-
-        if (direction.LengthSquared() < 1e-8f)
+        else if (!TrySpeculativePush(controller, pushers, center, push, rotational, out moved))
         {
-            // A vertically-moving surface pushes straight away from itself instead
-            direction = center - collider.WorldBounds.Center;
-            direction.Z = 0f;
-        }
+            SetOriginAndAngles(previousOrigin, previousAngles);
 
-        if (direction.LengthSquared() < 1e-8f)
-        {
-            Blocked(controller, carried, Vector3.Zero, moveTime);
-            return;
-        }
-
-        direction = Vector3.Normalize(direction);
-
-        // The hull was clear of the previous pose a tick ago, so the penetration cannot exceed what
-        // the pose swept since: the farthest any hull corner was displaced bounds the search
-        var reach = MaxHullDisplacement(center, halfExtents) + ProbeShrink + Rubikon.SurfaceEpsilon;
-
-        const int Steps = 8;
-
-        for (var step = 1; step <= Steps; step++)
-        {
-            var clear = reach * step / Steps;
-
-            if (collider.OverlapsVolume(center + direction * clear, probeExtents))
+            // A blocked step does not count on the move clock, so the arrival slips by it
+            if (MoveDoneTime > 0f)
             {
-                continue;
+                localTime -= moveTime;
             }
 
-            var inside = reach * (step - 1) / Steps;
-
-            for (var i = 0; i < 4; i++)
-            {
-                var mid = (inside + clear) * 0.5f;
-
-                if (collider.OverlapsVolume(center + direction * mid, probeExtents))
-                {
-                    inside = mid;
-                }
-                else
-                {
-                    clear = mid;
-                }
-            }
-
-            // Past the probe shrink, so the full hull is truly clear, plus the movement code's own
-            // keep-away margin, so its traces do not immediately read the surface as a contact.
-            // Immediate, unlike the carry: a depenetration is a correction, and the hull leaving the
-            // pusher right here is what keeps its faces plainly solid to the player's own movement.
-            var shove = direction * (clear + ProbeShrink + Rubikon.SurfaceEpsilon);
-            var moved = controller.Push(shove, immediate: true);
-
-            if (moved != shove && collider.OverlapsVolume(center + moved, probeExtents))
-            {
-                // A wall took part of the push: squeezed between this entity and the world
-                Blocked(controller, carried, moved, moveTime);
-            }
-
-            return;
+            return player;
         }
 
-        Blocked(controller, carried, Vector3.Zero, moveTime);
+        controller.Push(moved - center);
+        return null;
+    }
+
+    // This entity and everything parented under it, Source's SetupAllInHierarchy
+    private void CollectPushers(List<BaseEntity> pushers)
+    {
+        pushers.Add(this);
+
+        foreach (var child in moveChildren)
+        {
+            child.CollectPushers(pushers);
+        }
+    }
+
+    private BaseEntity RootMoveParent
+    {
+        get
+        {
+            var root = this;
+
+            while (root.MoveParent is { } parent)
+            {
+                root = parent;
+            }
+
+            return root;
+        }
     }
 
     /// <summary>
-    /// A push the player cannot escape: a forcing pusher squeezes on, anything else takes this tick's
-    /// motion back - the carry and shove included - and waits, its arrival postponed by the same.
+    /// Whether the player is something this push has to move, Source's <c>GenerateBlockingEntityList</c>:
+    /// anyone standing on the pushers rides them, anyone else only when the new pose overlaps them. Both
+    /// only within the volume the pushers now fill, stretched back over the ground the push covered and
+    /// two steps up.
     /// </summary>
-    private void Blocked(IPlayerController controller, Vector3 carried, Vector3 shoved, float moveTime)
+    private static bool IsInPushersWay(List<BaseEntity> pushers, BaseEntity? ground, Vector3 center, Vector3 halfExtents, Vector3 sweep)
     {
-        // The push already went as far as the world allowed, and the motion stands
-        if (PusherForcesThrough)
+        AABB? filled = null;
+
+        foreach (var pusher in pushers)
         {
-            return;
+            if (pusher.IsCollidable)
+            {
+                var bounds = pusher.Collider!.WorldBounds;
+                filled = filled?.Union(bounds) ?? bounds;
+            }
         }
 
-        // Undone the way each was applied: the reserved carry cancels out of the queue, the
-        // immediate shove steps straight back
-        controller.Push(-carried);
-        controller.Push(-shoved, immediate: true);
-
-        SetOriginAndAngles(previousOrigin, previousAngles);
-
-        if (MoveDoneTime > 0f)
+        if (filled is not { } volume || !(volume.Min.X < volume.Max.X && volume.Min.Y < volume.Max.Y && volume.Min.Z < volume.Max.Z))
         {
-            SetMoveDoneTime(MoveDoneTime - EntitySystem.CurrentTime + moveTime);
+            return false;
+        }
+
+        var searched = new AABB(
+            volume.Min - Vector3.Max(sweep, Vector3.Zero),
+            volume.Max - Vector3.Min(sweep, Vector3.Zero) + new Vector3(0f, 0f, 2f * PushStepSize));
+
+        if (!searched.Intersects(new AABB(center - halfExtents, center + halfExtents)))
+        {
+            return false;
+        }
+
+        if (ground != null && pushers.Contains(ground))
+        {
+            return true;
+        }
+
+        // Shrunk like the movement code's own overlap probes: the SAT test is exact, and a hull resting
+        // its SurfaceEpsilon gap away reads as touching at times, which would jitter false pushes
+        var probeExtents = halfExtents - new Vector3(Rubikon.SurfaceEpsilon / 2f);
+
+        foreach (var pusher in pushers)
+        {
+            if (pusher.IsCollidable && pusher.Collider!.OverlapsVolume(center, probeExtents))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Where this tick's turn takes the player, Source's <c>ComputeRotationalPushDirection</c>: the motion
+    /// of their origin at the feet, or for a physics mesh pusher, of the corner of their box that leads
+    /// into that motion.
+    /// </summary>
+    private Vector3 RotationalPushAt(in Matrix4x4 motion, Vector3 center, Vector3 halfExtents)
+    {
+        var start = center with { Z = center.Z - halfExtents.Z };
+        var move = DisplacementAt(motion, start);
+
+        if (HasVPhysicsSolid)
+        {
+            var min = center - halfExtents;
+            var max = center + halfExtents;
+
+            start = new Vector3(
+                move.X < 0f ? max.X : min.X,
+                move.Y < 0f ? max.Y : min.Y,
+                move.Z < 0f ? max.Z : min.Z);
+
+            move = DisplacementAt(motion, start);
+        }
+
+        return move;
+    }
+
+    /// <summary>
+    /// Moves the player by the push, Source's <c>SpeculativelyCheckPush</c>. The move is traced with the
+    /// pushers out of the way and stops at whatever else is there. A straight push that went the whole
+    /// way is done; otherwise the player must have come out clear of everything, pushers included.
+    /// </summary>
+    /// <returns><see langword="false"/> when the player blocks the push.</returns>
+    private bool TrySpeculativePush(IPlayerController controller, List<BaseEntity> pushers, Vector3 center, Vector3 push, bool rotational, out Vector3 moved)
+    {
+        var destination = center + push;
+        var trace = TraceWithPushersUnlinked(controller, pushers, center, destination);
+
+        EntitySystem.NotePlayerImpact(trace);
+
+        if (!IsUnblockableByPlayer)
+        {
+            moved = trace.Hit ? trace.HitPosition : destination;
+
+            // A straight push that went the whole way cannot have left them inside anything
+            return (!rotational && !trace.Hit) || !controller.IsHullStuck(moved);
+        }
+
+        moved = destination;
+
+        if (!controller.IsHullStuck(destination))
+        {
+            return true;
+        }
+
+        // Nudged half a unit either way along the pusher's forward and left axes to shed accumulated
+        // error, and left inside if none of those clears
+        var transform = RigidTransform;
+        Span<Vector3> axes =
+        [
+            new(transform.M11, transform.M12, transform.M13),
+            new(transform.M21, transform.M22, transform.M23),
+        ];
+
+        for (var i = 0; i < 4; i++)
+        {
+            var nudged = destination + axes[i >> 1] * ((i & 1) == 0 ? 0.5f : -0.5f);
+
+            if (!controller.IsHullStuck(nudged))
+            {
+                moved = nudged;
+                return true;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// The game's own push for a player in a train's way, which never blocks. A rider is carried like by
+    /// any pusher, then lifted out of whatever that left them in; anyone else is slid along the push.
+    /// </summary>
+    private Vector3 PushPlayerAsTrain(IPlayerController controller, List<BaseEntity> pushers, Vector3 center, Vector3 push, bool rotational)
+    {
+        var groundRoot = controller.GroundEntity?.RootMoveParent;
+        var moved = center;
+        var direction = Vector3.UnitZ;
+        float distance;
+
+        if (groundRoot == RootMoveParent)
+        {
+            TrySpeculativePush(controller, pushers, center, push, rotational, out moved);
+            distance = LiftOutDistance(controller, moved);
+        }
+        else
+        {
+            distance = push.Length();
+            direction = distance > 0f ? push / distance : Vector3.Zero;
+        }
+
+        // Slid again from where that left them while they are still inside something: a turn up to three
+        // more times, a straight push once more unless they stand on this very pusher
+        var slides = rotational ? 4 : groundRoot != this ? 2 : 1;
+
+        for (var slide = 0; slide < slides; slide++)
+        {
+            if (slide > 0 && !controller.IsHullStuck(moved))
+            {
+                break;
+            }
+
+            moved = SlidePlayer(controller, pushers, moved, direction, distance);
+        }
+
+        return moved;
+    }
+
+    /// <summary>
+    /// How far a carried train rider must be lifted: nothing while they are clear, else 1.1 times the
+    /// height of whatever a hull dropped from 72 units above them lands on.
+    /// </summary>
+    private static float LiftOutDistance(IPlayerController controller, Vector3 center)
+    {
+        if (!controller.IsHullStuck(center))
+        {
+            return 0f;
+        }
+
+        var trace = controller.TraceHull(center + new Vector3(0f, 0f, 72f), center);
+
+        return trace.Hit ? (trace.HitPosition.Z - center.Z) * 1.1f : 0f;
+    }
+
+    /// <summary>
+    /// Slides the player along a push for up to four bumps, with the pushers out of the way. Every sweep
+    /// starts four units above where the slide began. A bump takes the push off the surface it hit and
+    /// lengthens what remains by as much as the hit was a graze.
+    /// </summary>
+    private Vector3 SlidePlayer(IPlayerController controller, List<BaseEntity> pushers, Vector3 center, Vector3 direction, float distance)
+    {
+        var start = center + new Vector3(0f, 0f, 4f);
+        var moved = center;
+        var trace = new Rubikon.TraceResult();
+
+        for (var bump = 0; bump < 4; bump++)
+        {
+            var end = moved + direction * distance;
+            trace = TraceWithPushersUnlinked(controller, pushers, start, end);
+
+            if (!trace.Hit)
+            {
+                moved = end;
+                break;
+            }
+
+            var length = Vector3.Distance(start, end);
+            var fraction = length > 0f ? MathF.Min(trace.Distance / length, 1f) : 0f;
+
+            if (fraction > 0f)
+            {
+                moved = trace.HitPosition;
+            }
+
+            var normal = trace.HitNormal;
+            var into = Vector3.Dot(direction, normal);
+
+            distance = (2f - MathF.Abs(into)) * ((1f - fraction) * distance);
+            direction = MathUtils.ProjectOntoPlane(direction, normal);
+
+            var back = Vector3.Dot(direction, normal);
+
+            if (back < 0f)
+            {
+                direction -= normal * back;
+            }
+        }
+
+        EntitySystem.NotePlayerImpact(trace);
+        return moved;
+    }
+
+    // Sweeps the hull with the pushed hierarchy taken out of the world, as its own new pose is not what
+    // the player is being moved out of
+    private static Rubikon.TraceResult TraceWithPushersUnlinked(IPlayerController controller, List<BaseEntity> pushers, Vector3 from, Vector3 to)
+    {
+        SetCollisionSuspended(pushers, true);
+        var trace = controller.TraceHull(from, to);
+        SetCollisionSuspended(pushers, false);
+
+        return trace;
+    }
+
+    private static void SetCollisionSuspended(List<BaseEntity> entities, bool suspended)
+    {
+        foreach (var entity in entities)
+        {
+            entity.isCollisionSuspended = suspended;
         }
     }
 
-    /// <summary>Where this tick's motion took a world point, minus where it was: the rigid displacement.</summary>
-    private Vector3 TickDisplacementAt(Vector3 point)
+    // Source's pusher remembers what blocked it, telling the entity when that changes and then on every
+    // blocked tick
+    private void UpdateBlocker(BaseEntity? blocker)
     {
-        var before = EntityTransformHelper.EulerAnglesToRotationMatrix(previousAngles);
-        var after = EntityTransformHelper.EulerAnglesToRotationMatrix(Angles);
-
-        var local = Vector3.TransformNormal(point - previousOrigin, Matrix4x4.Transpose(before));
-
-        return Vector3.TransformNormal(local, after) + Origin - point;
-    }
-
-    /// <summary>The farthest this tick's motion displaced any corner of a hull, or its center.</summary>
-    private float MaxHullDisplacement(Vector3 center, Vector3 halfExtents)
-    {
-        var most = TickDisplacementAt(center).Length();
-
-        for (var corner = 0; corner < 8; corner++)
+        if (blocker != currentBlocker)
         {
-            var offset = new Vector3(
-                (corner & 1) == 0 ? -halfExtents.X : halfExtents.X,
-                (corner & 2) == 0 ? -halfExtents.Y : halfExtents.Y,
-                (corner & 4) == 0 ? -halfExtents.Z : halfExtents.Z);
+            if (currentBlocker != null)
+            {
+                OnEndBlocked();
+            }
 
-            most = MathF.Max(most, TickDisplacementAt(center + offset).Length());
+            currentBlocker = blocker;
+
+            if (blocker != null)
+            {
+                OnStartBlocked(blocker);
+            }
         }
 
-        return most;
+        if (blocker != null)
+        {
+            OnBlocked(blocker);
+        }
     }
+
+    /// <summary>Runs on the first tick a push is blocked by <paramref name="blocker"/>. Source's <c>StartBlocked</c>.</summary>
+    /// <param name="blocker">What the push could not move.</param>
+    protected virtual void OnStartBlocked(BaseEntity blocker)
+    {
+    }
+
+    /// <summary>
+    /// Runs on every tick a push is blocked, after the tick's motion was taken back. Source's <c>Blocked</c>.
+    /// </summary>
+    /// <param name="blocker">What the push could not move.</param>
+    protected virtual void OnBlocked(BaseEntity blocker)
+    {
+    }
+
+    /// <summary>Runs on the first push that is no longer blocked. Source's <c>EndBlocked</c>.</summary>
+    protected virtual void OnEndBlocked()
+    {
+    }
+
+    /// <summary>
+    /// This tick's own motion as one transform, taking where a world point was to where it is now. The
+    /// move parent's motion is left out, as the parent's push already carried the player with it.
+    /// </summary>
+    private Matrix4x4 GetTickMotion(out Matrix4x4 current)
+    {
+        var parentFrame = GetParentFrame();
+        var previous = EntityTransformHelper.ToRigidTransformationMatrix(previousAngles, previousOrigin) * parentFrame;
+
+        current = EntityTransformHelper.ToRigidTransformationMatrix(angles, origin) * parentFrame;
+
+        return Matrix4x4.Invert(previous, out var previousToLocal) ? previousToLocal * current : Matrix4x4.Identity;
+    }
+
+    // Where the tick's motion took a world point, minus where it was: the rigid displacement
+    private static Vector3 DisplacementAt(in Matrix4x4 motion, Vector3 point) => Vector3.Transform(point, motion) - point;
 
     /// <summary>The velocity of this entity's surface at a world position: linear plus the angular sweep.</summary>
     public Vector3 GetSurfaceVelocity(Vector3 at)
     {
         var omega = new Vector3(AngularVelocity.Z, AngularVelocity.X, AngularVelocity.Y) * (MathF.PI / 180f);
 
-        return Velocity + Vector3.Cross(omega, at - Origin);
+        return Velocity + Vector3.Cross(omega, at - WorldOrigin);
     }
 
     /// <summary>
@@ -911,6 +1283,48 @@ public abstract class BaseEntity
         UpdateTransform();
     }
 
+    /// <summary>Puts the entity at a world origin and orientation, whatever frame it moves in.</summary>
+    protected void SetWorldOriginAndAngles(Vector3 newOrigin, Vector3 newAngles)
+    {
+        if (parentFrameKind == ParentFrameKind.None)
+        {
+            SetOriginAndAngles(newOrigin, newAngles);
+            return;
+        }
+
+        SetWorldPose(EntityTransformHelper.ToRigidTransformationMatrix(newAngles, newOrigin));
+    }
+
+    private void SetWorldPose(in Matrix4x4 world)
+    {
+        if (!Matrix4x4.Invert(GetParentFrame(), out var worldToParent))
+        {
+            return;
+        }
+
+        var local = world * worldToParent;
+
+        SetPose(local.Translation, EntityTransformHelper.ToEulerAngles(Quaternion.CreateFromRotationMatrix(local)));
+    }
+
+    private void SetPose(Vector3 newOrigin, Vector3 newAngles) => SetOriginAndAngles(newOrigin, newAngles);
+
+    // The frame the local pose is in at the current tick
+    private Matrix4x4 GetParentFrame() => parentFrameKind switch
+    {
+        ParentFrameKind.Entity => MoveParent!.RigidTransform,
+        ParentFrameKind.Attachment => ((BaseModelEntity)MoveParent!).ModelNode!.GetChildFrame(parentAttachmentName),
+        _ => Matrix4x4.Identity,
+    };
+
+    // The frame the drawn transform is in this frame
+    private Matrix4x4 GetParentRenderFrame() => parentFrameKind switch
+    {
+        ParentFrameKind.Entity => MoveParent!.renderFrame,
+        ParentFrameKind.Attachment => GetParentFrame(),
+        _ => Matrix4x4.Identity,
+    };
+
     /// <summary>
     /// Brings the entity's node up to date for this frame: interpolate between the last two ticks, then put
     /// the node where that lands.
@@ -924,7 +1338,7 @@ public abstract class BaseEntity
     {
         // A paused world has no span to interpolate across, and reading one would draw every entity at
         // the tick it last started rather than where it stands, re-dirtying the transform every frame
-        var isMoving = EntitySystem.Enabled && (previousOrigin != origin || previousAngles != angles);
+        var isMoving = EntitySystem.Enabled && (MovedThisTick() || parentFrameKind == ParentFrameKind.Attachment);
 
         if (isMoving || isInterpolating)
         {
@@ -983,35 +1397,17 @@ public abstract class BaseEntity
         Scene.Add(node, dynamic: true);
     }
 
-    // The move parent's model then places the entity's nodes, rather than the entity following it
-    private bool isAttachedToParentModel;
-
-    /// <summary>
-    /// Hangs the nodes this entity places off an attachment or bone of the move parent's model, snapping
-    /// them onto it. Plain parenting is left to the move parent, which the entity follows by itself.
-    /// <c>uselocaloffset</c> is ignored, as the engine does here too.
-    /// </summary>
-    private void AttachToParentModel(string attachmentName)
+    // The scene places these nodes after the parent model animates, so they never lag a frame behind it
+    private void AttachToParentModel(SceneNodes.ModelSceneNode parentModel)
     {
-        if (MoveParent is not BaseModelEntity { ModelNode: { } parentModel })
-        {
-            return;
-        }
-
-        if (!parentModel.HasAttachmentOrBone(attachmentName))
-        {
-            EntitySystem.Logger.LogWarning("{Classname} '{TargetName}' is parented to {AttachmentName} on '{ParentName}', which has no such attachment or bone",
-                Classname, TargetName, attachmentName, MoveParent.TargetName);
-            return;
-        }
+        var local = Matrix4x4.CreateScale(EntityScale) * EntityTransformHelper.ToRigidTransformationMatrix(angles, origin);
 
         foreach (var node in placedNodes)
         {
-            parentModel.AttachNode(node, attachmentName);
+            node.SetParent(parentModel, parentAttachmentName, node.ApplyPlacementScale(local));
         }
 
         placedNodes.Clear();
-        isAttachedToParentModel = true;
     }
 
     /// <summary>
@@ -1047,7 +1443,7 @@ public abstract class BaseEntity
     /// <summary>Rebuilds <see cref="Transform"/> from the current scale, angles, and origin.</summary>
     protected void UpdateTransform()
     {
-        SetTransform(Origin, Angles);
+        SetTransform(origin, angles);
         UpdateColliderTransform();
     }
 
@@ -1062,12 +1458,16 @@ public abstract class BaseEntity
     /// </remarks>
     protected void UpdateColliderTransform()
     {
-        if (Collider == null)
-        {
-            return;
-        }
+        Collider?.Transform = RigidTransform;
 
-        Collider.Transform = RigidTransform;
+        // Children ride this pose without moving themselves, so their shapes have to follow it here
+        foreach (var child in moveChildren)
+        {
+            if (!child.IsRemoved)
+            {
+                child.UpdateColliderTransform();
+            }
+        }
     }
 
     /// <summary>
@@ -1081,16 +1481,15 @@ public abstract class BaseEntity
     /// </remarks>
     protected virtual void UpdateRenderTransform(float fraction)
     {
-        var origin = Vector3.Lerp(previousOrigin, Origin, fraction);
+        var drawnOrigin = Vector3.Lerp(previousOrigin, origin, fraction);
         var rotation = Quaternion.Slerp(
             EntityTransformHelper.EulerAnglesToQuaternion(previousAngles),
-            EntityTransformHelper.EulerAnglesToQuaternion(Angles),
+            EntityTransformHelper.EulerAnglesToQuaternion(angles),
             fraction);
 
-        Transform = Matrix4x4.CreateScale(EntityScale)
-            * Matrix4x4.CreateFromQuaternion(rotation)
-            * Matrix4x4.CreateTranslation(origin)
-            * ParentTransform;
+        // A child interpolates in its parent frame, which the parent has interpolated already
+        renderFrame = Matrix4x4.CreateFromQuaternion(rotation) * Matrix4x4.CreateTranslation(drawnOrigin) * GetParentRenderFrame();
+        Transform = Matrix4x4.CreateScale(EntityScale) * renderFrame;
 
         transformDirty = true;
     }
@@ -1102,17 +1501,16 @@ public abstract class BaseEntity
     /// </summary>
     protected void SnapInterpolation()
     {
-        previousOrigin = Origin;
-        previousAngles = Angles;
+        previousOrigin = origin;
+        previousAngles = angles;
         isInterpolating = false;
         UpdateTransform();
     }
 
     private void SetTransform(Vector3 origin, Vector3 angles)
     {
-        Transform = Matrix4x4.CreateScale(EntityScale)
-            * EntityTransformHelper.ToRigidTransformationMatrix(angles, origin)
-            * ParentTransform;
+        renderFrame = EntityTransformHelper.ToRigidTransformationMatrix(angles, origin) * GetParentRenderFrame();
+        Transform = Matrix4x4.CreateScale(EntityScale) * renderFrame;
 
         transformDirty = true;
     }

@@ -89,13 +89,15 @@ public class FuncMoveLinear : BaseToggle
         if ((authored == AuthoredPosition.OpenPosition && startPosition != 1f)
             || (authored == AuthoredPosition.ClosedPosition && startPosition != 0f))
         {
-            Teleport(PositionClosed + travel * startPosition, null);
+            JumpTo(PositionClosed + travel * startPosition, Angles);
         }
 
         if (HasSpawnFlags(SpawnFlag.NotSolid))
         {
             IsSolid = false;
         }
+
+        MovesWithoutPushing = KeyValues.GetBooleanProperty("movewithoutpushingblockers");
 
         soundStart = NonEmpty(KeyValues.GetStringProperty("startsound"));
         soundStop = NonEmpty(KeyValues.GetStringProperty("stopsound"));
@@ -149,7 +151,7 @@ public class FuncMoveLinear : BaseToggle
         if (soundStop != null && currentSound != soundStop)
         {
             currentSound = soundStop;
-            stopSound = Sound.Play(soundStop, Origin);
+            stopSound = Sound.Play(soundStop, WorldOrigin);
         }
     }
 
@@ -279,7 +281,7 @@ public class FuncMoveLinear : BaseToggle
             else
             {
                 currentSound = soundStart;
-                startSound = Sound.Play(soundStart, Origin);
+                startSound = Sound.Play(soundStart, WorldOrigin);
             }
         }
 

@@ -17,6 +17,7 @@ namespace GUI.Utils
     public class VrfGuiContext : GameFileLoader
     {
         public static ILogger Logger { get; } = MakeLogger();
+        private static readonly ILogger FileLoaderLogger = new GuiLoggerAdapter(nameof(GameFileLoader));
 
         public string FileName { get; }
 
@@ -72,7 +73,7 @@ namespace GUI.Utils
         private readonly int ContextId = ++LastContextId;
 #endif
 
-        public VrfGuiContext(string fileName, VrfGuiContext? parentGuiContext) : base(null, fileName)
+        public VrfGuiContext(string fileName, VrfGuiContext? parentGuiContext, bool loadSearchPaths = true) : base(null, fileName, FileLoaderLogger)
         {
 #if DEBUG
             Log.Debug(nameof(VrfGuiContext), $"#{ContextId} created");
@@ -82,11 +83,17 @@ namespace GUI.Utils
 
             ParentGuiContext?.AddChildren();
 
-            if (ParentGuiContext != null)
+            if (ParentGuiContext != null || !loadSearchPaths)
             {
                 return;
             }
 
+            LoadSearchPaths();
+        }
+
+        /// <summary>Adds the game search paths from settings.</summary>
+        public void LoadSearchPaths()
+        {
             var paths = Settings.Config.GameSearchPaths.ToList(); // Make a copy
 
             try

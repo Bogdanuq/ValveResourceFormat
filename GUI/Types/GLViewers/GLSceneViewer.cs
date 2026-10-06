@@ -170,7 +170,7 @@ namespace GUI.Types.GLViewers
                     }
                 }
 
-                if (Renderer.EntitySystem.PhysicsWorld != null)
+                if (!Renderer.EntitySystem.PhysicsWorld.IsEmpty)
                 {
                     UiControl.AddCheckBox("Debug Physics Traces", showPhysicsTraces, v => showPhysicsTraces = v);
                 }
@@ -393,6 +393,9 @@ namespace GUI.Types.GLViewers
             GuiContext.ClearCache();
             GuiContext.GLPostLoadAction?.Invoke(this);
             GuiContext.GLPostLoadAction = null;
+
+            ReportLoadingStatus("Compiling shaders…");
+            Scene.RendererContext.ShaderLoader.LinkLoadedShaders();
         }
 
         /// <summary>
@@ -471,8 +474,8 @@ namespace GUI.Types.GLViewers
                 return;
             }
 
-            soundPlayer.LoadSoundEvents();
-            soundPlayer.LoadSoundscapes();
+            // TODO: load soundevents once per game not per sub context
+            soundPlayer.LoadAsync(Scene.RendererContext.CancellationToken);
 
             // todo: collision filter 'default' and 'blocksound'
             // const float OcclusionEndMargin = 48f;
@@ -741,7 +744,7 @@ namespace GUI.Types.GLViewers
                     Scene.OcclusionDebug.Render();
                 }
 
-                if (showPhysicsTraces && Renderer.EntitySystem.PhysicsWorld != null)
+                if (showPhysicsTraces && !Renderer.EntitySystem.PhysicsWorld.IsEmpty)
                 {
                     physicsTraceRenderer ??= new PhysicsTraceDebugRenderer(Scene.RendererContext);
                     physicsTraceRenderer.Render(Renderer.EntitySystem.PhysicsWorld, Input, Renderer.Camera);

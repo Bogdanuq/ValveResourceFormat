@@ -30,7 +30,6 @@ public static class EntityFactory
         EntityInputTable.Bind<GenericEntity>();
         EntityInputTable.Bind<GenericModelEntity>();
 
-        Register<WorldEntity>("worldspawn", static (system, spawnInfo) => new WorldEntity(system, spawnInfo));
         Register<InfoWorldLayer>("info_world_layer", static (system, spawnInfo) => new InfoWorldLayer(system, spawnInfo));
         Register<InfoVisibilityBox>("info_visibility_box", static (system, spawnInfo) => new InfoVisibilityBox(system, spawnInfo));
 
@@ -41,6 +40,8 @@ public static class EntityFactory
         Register<FuncDoorRotating>("func_door_rotating", static (system, spawnInfo) => new FuncDoorRotating(system, spawnInfo));
         Register<FuncMoveLinear>("func_movelinear", static (system, spawnInfo) => new FuncMoveLinear(system, spawnInfo));
         Register<FuncRotating>("func_rotating", static (system, spawnInfo) => new FuncRotating(system, spawnInfo));
+        Register<FuncTrackTrain>("func_tracktrain", static (system, spawnInfo) => new FuncTrackTrain(system, spawnInfo));
+        Register<PathTrack>("path_track", static (system, spawnInfo) => new PathTrack(system, spawnInfo));
         Register<PropDoorRotating>("prop_door_rotating", static (system, spawnInfo) => new PropDoorRotating(system, spawnInfo));
         Register<PropDoorRotating>("prop_door_rotating_physics", static (system, spawnInfo) => new PropDoorRotating(system, spawnInfo));
         Register<PropDynamic>("prop_dynamic", static (system, spawnInfo) => new PropDynamic(system, spawnInfo));
@@ -119,6 +120,7 @@ public static class EntityFactory
         Register<LogicTimer>("logic_timer", static (system, spawnInfo) => new LogicTimer(system, spawnInfo));
         Register<MathCounter>("math_counter", static (system, spawnInfo) => new MathCounter(system, spawnInfo));
         Register<FilterActivatorModel>("filter_activator_model", static (system, spawnInfo) => new FilterActivatorModel(system, spawnInfo));
+        Register<FilterActivatorTeam>("filter_activator_team", static (system, spawnInfo) => new FilterActivatorTeam(system, spawnInfo));
         Register<InfoSpawnGroupLoadUnload>("info_spawngroup_load_unload", static (system, spawnInfo) => new InfoSpawnGroupLoadUnload(system, spawnInfo));
 
         // sounds
@@ -146,17 +148,21 @@ public static class EntityFactory
     }
 
     /// <summary>
-    /// Creates and spawns the entity for a classname. The entity is fully set up when this returns, but
-    /// is not in the world yet; <see cref="EntitySystem.CreateEntity"/> is what puts it there. A classname
+    /// Creates the entity for a classname, not yet spawned and not yet in the world;
+    /// <see cref="EntitySystem.CreateEntity"/> is what spawns it and puts it there. A classname
     /// that is not implemented spawns a <see cref="GenericModelEntity"/> when it has a model, and a
     /// <see cref="GenericEntity"/> when it does not.
     /// </summary>
-    /// <returns>The spawned entity, or <see langword="null"/> when the keyvalues name no classname.</returns>
+    /// <returns>
+    /// The entity, or <see langword="null"/> when the keyvalues name no classname or a <c>worldspawn</c>.
+    /// </returns>
     public static BaseEntity? Create(EntitySystem system, EntitySpawnInfo spawnInfo)
     {
         var classname = spawnInfo.Data.GetStringProperty("classname");
 
-        if (classname == null)
+        // No entity class goes by worldspawn: its keyvalues are the map's world settings, and the world
+        // entity is the entity system's own
+        if (classname == null || classname.Equals("worldspawn", StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
@@ -175,8 +181,6 @@ public static class EntityFactory
         {
             entity = new GenericModelEntity(system, spawnInfo);
         }
-
-        entity.Spawn();
 
         return entity;
     }

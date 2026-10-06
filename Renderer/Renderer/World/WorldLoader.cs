@@ -108,7 +108,8 @@ namespace ValveResourceFormat.Renderer.World
 
         private readonly LoadKind loadKind;
 
-        private bool IsNested => loadKind != LoadKind.Map;
+        // What this spawn group puts in place of the markers in its entities' names
+        private readonly EntityNameFixup nameFixup;
 
         /// <summary>
         /// Loads a map by name, performing a full load of all world components.
@@ -118,9 +119,9 @@ namespace ValveResourceFormat.Renderer.World
         /// <param name="entitySystem">The entity world this map's entities spawn into.</param>
         /// <param name="rootTransform">Transform applied to the whole map, identity when <see langword="null"/>.</param>
         public static WorldLoader LoadMap(string mapResourceName, Scene scene, EntitySystem entitySystem, Matrix4x4? rootTransform = null)
-            => LoadMap(mapResourceName, scene, entitySystem, rootTransform, LoadKind.Map);
+            => LoadMap(mapResourceName, scene, entitySystem, rootTransform, LoadKind.Map, EntityNameFixup.None);
 
-        private static WorldLoader LoadMap(string mapResourceName, Scene scene, EntitySystem entitySystem, Matrix4x4? rootTransform, LoadKind loadKind)
+        private static WorldLoader LoadMap(string mapResourceName, Scene scene, EntitySystem entitySystem, Matrix4x4? rootTransform, LoadKind loadKind, EntityNameFixup nameFixup)
         {
             var renderContext = scene.RendererContext;
             Resource? mapResource = null;
@@ -142,7 +143,7 @@ namespace ValveResourceFormat.Renderer.World
             var worldPath = GetWorldNameFromMap(mapResourceName);
             var worldResource = renderContext.FileLoader.LoadFileCompiled(worldPath) ?? throw new FileNotFoundException($"Failed to load world file '{worldPath}'.");
 
-            var loader = new WorldLoader((WorldResource)worldResource.DataBlock!, scene, entitySystem, rootTransform, loadKind);
+            var loader = new WorldLoader((WorldResource)worldResource.DataBlock!, scene, entitySystem, rootTransform, loadKind, nameFixup);
             loader.Load(mapResource.ExternalReferences);
             return loader;
         }
@@ -156,13 +157,14 @@ namespace ValveResourceFormat.Renderer.World
         /// <param name="entitySystem">The entity world this map's entities spawn into.</param>
         /// <param name="rootTransform">Transform applied to the whole map, identity when <see langword="null"/>.</param>
         public WorldLoader(WorldResource world, Scene scene, EntitySystem entitySystem, Matrix4x4? rootTransform = null)
-            : this(world, scene, entitySystem, rootTransform, LoadKind.Map)
+            : this(world, scene, entitySystem, rootTransform, LoadKind.Map, EntityNameFixup.None)
         {
         }
 
-        private WorldLoader(WorldResource world, Scene scene, EntitySystem entitySystem, Matrix4x4? rootTransform, LoadKind loadKind)
+        private WorldLoader(WorldResource world, Scene scene, EntitySystem entitySystem, Matrix4x4? rootTransform, LoadKind loadKind, EntityNameFixup nameFixup)
         {
             this.loadKind = loadKind;
+            this.nameFixup = nameFixup;
             MapName = Path.GetDirectoryName(world.Resource!.FileName!)!.Replace('\\', '/');
             World = world;
             this.scene = scene;
@@ -297,6 +299,8 @@ namespace ValveResourceFormat.Renderer.World
         {
             ReportLoadingPhase("Loading entities…");
 
+            entitySystem.SpawnWorld(scene);
+
             foreach (var lumpName in World.GetEntityLumpNames())
             {
                 CancellationToken.ThrowIfCancellationRequested();
@@ -319,13 +323,16 @@ namespace ValveResourceFormat.Renderer.World
                     continue;
                 }
 
-                LoadEntitiesFromLump(entityLump, "Entities");
+                LoadEntitiesFromLump(entityLump, "Entities", rootTransform, nameFixup);
             }
 
             // Every entity exists now, so the simulated ones can resolve each other by name. A nested
             // group loads part way through the outer map's own lump, so it leaves activation to that
             // load, which runs once everything - every spawn group - has spawned.
-            if (!IsNested)
+            // TODO: The engine spawns and activates each spawn group as a batch of its own, a 3D sky or
+            // prefab separately from the map that placed it, so neither finds the other's entities by
+            // name while it activates.
+            if (loadKind == LoadKind.Map)
             {
                 entitySystem.Activate();
             }
@@ -414,10 +421,10 @@ namespace ValveResourceFormat.Renderer.World
                     scene.Add(physSceneNode, true);
                 }
 
-                // Only the player's world needs collision
-                if (phys.Parts.Length > 0 && !IsNested)
+                // Every spawn group adds its collision to the physics world of its world group, a 3D sky's included
+                if (phys.Parts.Length > 0)
                 {
-                    entitySystem.PhysicsWorld = new Rubikon(phys);
+                    entitySystem.GetPhysicsWorld(scene.WorldGroup).Add(scene, new Rubikon(phys), rootTransform);
                 }
             }
         }
@@ -545,7 +552,7 @@ namespace ValveResourceFormat.Renderer.World
             scene.RenderAttributes.TryAdd("S_LIGHTMAP_VERSION_MINOR", (byte)scene.LightingInfo.LightmapGameVersionNumber);
         }
 
-        private void LoadEntitiesFromLump(EntityLump entityLump, string originalLayerName)
+        private void LoadEntitiesFromLump(EntityLump entityLump, string originalLayerName, Matrix4x4 lumpTransform, EntityNameFixup lumpNameFixup)
         {
             // Cubemaps and probes spawn before everything else. Meshes copy the scene's render attributes into
             // their shader combos as they are built, and three of those come from these entities:
@@ -560,10 +567,14 @@ namespace ValveResourceFormat.Renderer.World
                 || cls == "env_cubemap_box"
                 || cls == "env_cubemap";
 
+            // TODO: The engine spawns nothing of a point_template when the map loads. ForceSpawn, its own or an
+            // env_entity_maker's, loads the template's lump as a spawn group placed at the spawner, with a
+            // numbered local name fixup unless spawnflag 2 keeps the names, and fires OnEntitySpawned;
+            // DeleteCreatedSpawnGroups unloads them. Here every template's entities spawn with the map instead.
             var traversed = EntityLumpTraversal.EnumerateEntities(
                 entityLump,
                 RendererContext.FileLoader,
-                rootTransform,
+                lumpTransform,
                 onMissingChildLump: name => RendererContext.Logger.LogWarning("Failed to find child entity lump with name {EntityLumpName}", name))
                 .ToList();
 
@@ -599,17 +610,20 @@ namespace ValveResourceFormat.Renderer.World
                     }
 
                     // Every entity joins the entity system, so it can be named and targeted, and draws itself
-                    var created = entitySystem.CreateEntity(entity, parentTransform, layerName, scene);
+                    var created = entitySystem.CreateEntity(entity, parentTransform, layerName, scene, lumpNameFixup);
 
                     switch (created)
                     {
-                        // A nested group carries a worldspawn of its own, which stays an ordinary inert entity
-                        case WorldEntity worldspawn when !IsNested:
-                            entitySystem.SetWorld(worldspawn);
-                            break;
+                        case InfoWorldLayer worldLayer:
+                            worldLayer.LayerSpawner = SpawnWorldLayer;
 
-                        case InfoWorldLayer { IsVisibleOnSpawn: true, WorldLayerName: { } worldLayerName }:
-                            DefaultEnabledLayers.Add(worldLayerName);
+                            // The engine spawns the layer's entities right as the layer spawns
+                            if (worldLayer is { IsVisibleOnSpawn: true, WorldLayerName: { } worldLayerName })
+                            {
+                                DefaultEnabledLayers.Add(worldLayerName);
+                                worldLayer.SpawnLayerEntities();
+                            }
+
                             break;
 
                         case PointCamera camera:
@@ -666,9 +680,82 @@ namespace ValveResourceFormat.Renderer.World
             }
         }
 
-        // Any class flagged ispointprefab places a map too, such as the CS2 team select and team intro stages
+        /// <summary>
+        /// Spawns the entity lump of an <c>info_world_layer</c>, which the map compiles as a child of its own
+        /// lump rather than listing it with the lumps that spawn when the map loads.
+        /// </summary>
+        private List<BaseEntity>? SpawnWorldLayer(InfoWorldLayer worldLayer)
+        {
+            // The layer names the world it belongs to.
+            // TODO: The engine finds any world loaded into the layer's world group by that name, such as a stage
+            // loaded by info_spawngroup_load_unload. Supporting it needs a registry of loaded worlds that keeps
+            // their loaders alive, and the layer's visibility toggled in the named world's scene too.
+            if (worldLayer.WorldName is not { } worldName
+                || !GetSpawnGroupMapName(worldName).Equals(MapName, StringComparison.OrdinalIgnoreCase))
+            {
+                RendererContext.Logger.LogWarning("info_world_layer '{TargetName}' names world '{WorldName}', not '{MapName}'", worldLayer.TargetName, worldLayer.WorldName, MapName);
+                return null;
+            }
+
+            if (worldLayer.WorldLayerName is not { } layerName || FindEntityLump(layerName) is not { } layerLump)
+            {
+                RendererContext.Logger.LogWarning("info_world_layer '{TargetName}' found no entity lump named '{LayerName}'", worldLayer.TargetName, worldLayer.WorldLayerName);
+                return null;
+            }
+
+            var firstSpawned = entitySystem.Entities.Count;
+
+            // The engine reuses the loaded world by name and spawns the layer's group with no world offset,
+            // so the layer stays where it was authored even when its map was placed elsewhere
+            LoadEntitiesFromLump(layerLump, "Entities", Matrix4x4.Identity, EntityNameFixup.None);
+
+            return [.. entitySystem.Entities.Skip(firstSpawned)];
+        }
+
+        private List<EntityLump>? worldEntityLumps;
+
+        /// <summary>
+        /// Finds a lump of this world by the name the lump gives itself, searching the world's lumps and
+        /// their child lumps depth first, so the first match in that order wins.
+        /// </summary>
+        private EntityLump? FindEntityLump(string name)
+        {
+            if (worldEntityLumps == null)
+            {
+                worldEntityLumps = [];
+
+                HashSet<string> visited = new(StringComparer.OrdinalIgnoreCase);
+
+                void Add(string lumpName)
+                {
+                    if (!visited.Add(lumpName) || RendererContext.FileLoader.LoadFileCompiled(lumpName)?.DataBlock is not EntityLump lump)
+                    {
+                        return;
+                    }
+
+                    worldEntityLumps.Add(lump);
+
+                    foreach (var childName in lump.GetChildEntityNames())
+                    {
+                        Add(childName);
+                    }
+                }
+
+                foreach (var lumpName in World.GetEntityLumpNames().OfType<string>())
+                {
+                    Add(lumpName);
+                }
+            }
+
+            return worldEntityLumps.Find(lump => lump.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Any class flagged ispointprefab places a map too, such as the CS2 team select and team intro stages.
+        // A point_prefab with prefab_load_dynamic switched off places nothing.
         private static bool IsSpawnGroupPlacement(string classname, Entity entity)
-            => classname is "skybox_reference" or "point_prefab" || entity.GetBooleanProperty("ispointprefab");
+            => classname == "skybox_reference"
+            || (classname == "point_prefab" && entity.GetBooleanProperty("prefab_load_dynamic", defaultValue: true))
+            || entity.GetBooleanProperty("ispointprefab");
 
         private void LoadSkybox(BaseEntity skyboxReference)
         {
@@ -680,17 +767,15 @@ namespace ValveResourceFormat.Renderer.World
             // Origin and angles only: a 3D sky is not scaled, the sky camera applies the scale instead
             var reference = skyboxReference.RigidTransform;
 
-            // Scenery: nothing can reach the sky, so its entities never build a collider. Compiled references
-            // always set worldgroupid; without one the sky would join the main world group.
+            // Without a world group of its own the sky joins the one of the map that placed it
             var skyScene = new Scene(RendererContext)
             {
-                EntitiesCollide = false,
-                WorldGroup = skyboxReference.Data.GetStringProperty("worldgroupid") is { Length: > 0 } worldGroup ? worldGroup : "skyboxWorldGroup0",
+                WorldGroup = skyboxReference.Data.GetStringProperty("worldgroupid") is { Length: > 0 } worldGroup ? worldGroup : scene.WorldGroup,
             };
 
             LoadingProgress?.Report("Loading 3D sky…");
 
-            var skyLoader = LoadNestedMap(RendererContext, entitySystem, targetMapName, skyScene, reference, LoadKind.SpawnGroup, out var package);
+            var skyLoader = LoadNestedMap(RendererContext, entitySystem, targetMapName, skyScene, reference, LoadKind.SpawnGroup, ChildNameFixup(skyboxReference), out var package);
 
             if (currentLoadingPhase != null)
             {
@@ -726,6 +811,13 @@ namespace ValveResourceFormat.Renderer.World
             }
         }
 
+        // A placed map keeps the fixups of the group the placing entity spawned in, unless asked to set its
+        // names apart with a numbered prefix of its own
+        private EntityNameFixup ChildNameFixup(BaseEntity reference)
+            => reference.SpawnData?.GetBooleanProperty("fixupnames") == true
+                ? reference.NameFixup with { Parent = $"{entitySystem.NextNameFixupIndex()}d_{reference.NameFixup.Parent}" }
+                : reference.NameFixup;
+
         // Compiled maps have prefabs merged in already; the ones left are loaded by the game at runtime
         private void LoadPrefab(BaseEntity prefab)
         {
@@ -734,7 +826,7 @@ namespace ValveResourceFormat.Renderer.World
                 return;
             }
 
-            var prefabLoader = LoadNestedMap(RendererContext, entitySystem, targetMapName, scene, prefab.RigidTransform, LoadKind.Prefab, out var package);
+            var prefabLoader = LoadNestedMap(RendererContext, entitySystem, targetMapName, scene, prefab.RigidTransform, LoadKind.Prefab, ChildNameFixup(prefab), out var package);
 
             if (package != null)
             {
@@ -777,7 +869,7 @@ namespace ValveResourceFormat.Renderer.World
                 }
 
                 scene = new Scene(rendererContext);
-                var loader = LoadMap($"{mapName}.vmap", scene, entitySystem, transform, LoadKind.SpawnGroup);
+                var loader = LoadMap($"{mapName}.vmap", scene, entitySystem, transform, LoadKind.SpawnGroup, EntityNameFixup.None);
 
                 scene.Initialize();
 
@@ -808,7 +900,7 @@ namespace ValveResourceFormat.Renderer.World
             }
         }
 
-        // Compiled names carry a [PR#] prefix that keyvalues referring to them leave out
+        // By the names the group spawns its entities with, which a group loaded by landmark leaves without fixups
         private static Vector3? FindEntityOrigin(RendererContext rendererContext, string mapResourceName, string targetName)
         {
             var worldResource = rendererContext.FileLoader.LoadFileCompiled(GetWorldNameFromMap(mapResourceName));
@@ -827,10 +919,7 @@ namespace ValveResourceFormat.Renderer.World
 
                 foreach (var (entity, parentTransform, _) in EntityLumpTraversal.EnumerateEntities(lump, rendererContext.FileLoader, Matrix4x4.Identity))
                 {
-                    var name = entity.TargetName;
-
-                    if (name != null && (name.Equals(targetName, StringComparison.OrdinalIgnoreCase)
-                        || EntityLump.RemoveTargetnamePrefix(name).Equals(targetName, StringComparison.OrdinalIgnoreCase)))
+                    if (string.Equals(entity.FriendlyTargetName, targetName, StringComparison.OrdinalIgnoreCase))
                     {
                         return Vector3.Transform(entity.GetVector3Property("origin"), parentTransform);
                     }
@@ -842,7 +931,7 @@ namespace ValveResourceFormat.Renderer.World
         }
 
         private static WorldLoader? LoadNestedMap(RendererContext rendererContext, EntitySystem entitySystem, string targetMapName,
-            Scene intoScene, Matrix4x4 transform, LoadKind loadKind, out Package? package)
+            Scene intoScene, Matrix4x4 transform, LoadKind loadKind, EntityNameFixup nameFixup, out Package? package)
         {
             var mapName = GetSpawnGroupMapName(targetMapName);
 
@@ -853,7 +942,7 @@ namespace ValveResourceFormat.Renderer.World
 
             try
             {
-                return LoadMap($"{mapName}.vmap", intoScene, entitySystem, transform, loadKind);
+                return LoadMap($"{mapName}.vmap", intoScene, entitySystem, transform, loadKind, nameFixup);
             }
             catch (FileNotFoundException e)
             {
@@ -1034,7 +1123,7 @@ namespace ValveResourceFormat.Renderer.World
         /// </summary>
         private void CreateHelperLines(BaseEntity entity)
         {
-            if (entity.Data is not { } data || HammerEntities.Get(entity.Classname) is not { Lines.Length: > 0 } hammerEntity)
+            if (entity.SpawnData is not { } data || HammerEntities.Get(entity.Classname) is not { Lines.Length: > 0 } hammerEntity)
             {
                 return;
             }
@@ -1091,7 +1180,7 @@ namespace ValveResourceFormat.Renderer.World
                 var matched = false;
 
                 // The entity as the caller, so a connection aimed at !self reaches it
-                foreach (var target in entitySystem.FindTargets(new EntityIOTarget(connection.TargetName, connection.TargetType), caller: entity))
+                foreach (var target in entitySystem.FindTargets(EntitySystem.ConnectionTarget(connection, entity.NameFixup), caller: entity))
                 {
                     // A 3D sky shares names with the map it is placed in
                     if (target.Scene.WorldGroup != scene.WorldGroup)
@@ -1134,7 +1223,7 @@ namespace ValveResourceFormat.Renderer.World
         /// </summary>
         private BaseEntity? FindHelperLineEnd(string key, string name)
             => key.Equals("targetname", StringComparison.OrdinalIgnoreCase)
-                ? entitySystem.FindAllByTargetName(name, scene).FirstOrDefault()
+                ? entitySystem.FindAllByTargetNameInWorldGroup(name, scene).FirstOrDefault()
                 : null;
 
         /// <summary>

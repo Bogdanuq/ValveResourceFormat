@@ -914,7 +914,7 @@ internal sealed partial class McpTools
         }
 
         return PackageLink(context) is { } package
-            ? $"{package}:{MainForm.EscapeVpkLinkPath(data.PackageEntry.GetFullPath())}"
+            ? $"{package}:{VpkLink.EscapePath(data.PackageEntry.GetFullPath())}"
             : null;
     }
 
@@ -943,7 +943,7 @@ internal sealed partial class McpTools
                 name += Path.IsPathFullyQualified(name) && File.Exists(name + "_dir.vpk") ? "_dir.vpk" : ".vpk";
             }
 
-            segments.Add(MainForm.EscapeVpkLinkPath(name));
+            segments.Add(VpkLink.EscapePath(name));
 
             if (Path.IsPathFullyQualified(name))
             {
@@ -969,7 +969,7 @@ internal sealed partial class McpTools
 
         foreach (var map in maps)
         {
-            paths.Add($"{link}:{MainForm.EscapeVpkLinkPath(map.GetFullPath())}");
+            paths.Add($"{link}:{VpkLink.EscapePath(map.GetFullPath())}");
         }
 
         return paths;
