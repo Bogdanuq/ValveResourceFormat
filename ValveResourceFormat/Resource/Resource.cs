@@ -44,6 +44,7 @@ namespace ValveResourceFormat
         /// and the resource undisposed, and can throw there instead of in <see cref="Read(Stream, bool)"/>.
         /// The DATA block of <see cref="ResourceType.VData"/> resources is always parsed, as it is specialized by its contents.
         /// The edit info parses on first use of <see cref="EditInfo"/>, unless it is needed to determine <see cref="ResourceType"/>.
+        /// The control and introspection blocks other blocks read from parse when those blocks first ask for them.
         /// </summary>
         public bool ReadBlocksOnDemand { get; set; }
 
@@ -268,7 +269,8 @@ namespace ValveResourceFormat
 
                 Blocks.Add(block);
 
-                if (block is ResourceEditInfo && ReadBlocksOnDemand && ResourceType != ResourceType.Unknown)
+                if ((block is ResourceEditInfo && ReadBlocksOnDemand && ResourceType != ResourceType.Unknown)
+                    || (block.Type is BlockType.CTRL or BlockType.NTRO && ReadBlocksOnDemand))
                 {
                     block.MarkDeferred();
                 }
