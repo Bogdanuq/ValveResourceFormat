@@ -146,7 +146,11 @@ internal abstract class ThumbnailRenderer : IDisposable
             return null;
         }
 
-        var resource = new Resource { FileName = entry.GetFullPath() };
+        var resource = new Resource
+        {
+            FileName = entry.GetFullPath(),
+            ReadBlocksOnDemand = true,
+        };
         resource.Read(stream);
 
         return resource;

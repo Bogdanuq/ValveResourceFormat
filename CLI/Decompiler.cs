@@ -1056,13 +1056,14 @@ namespace CLI
             using var resource = new Resource
             {
                 FileName = path,
+                ReadBlocksOnDemand = OutputFile == null && !CollectStats,
             };
 
             try
             {
                 resource.Read(stream);
 
-                if (HasShaderOptions && resource.DataBlock is Material material)
+                if (HasShaderOptions && resource.ResourceType == ResourceType.Material && resource.DataBlock is Material material)
                 {
                     ProcessMaterialShaderOptions(material, originalPath ?? Path.GetDirectoryName(path)!);
                     return;
@@ -1179,6 +1180,16 @@ namespace CLI
                 {
                     if (!PrintAllBlocks && !BlocksToPrint.Contains(block.Type.ToString()))
                     {
+                        continue;
+                    }
+
+                    try
+                    {
+                        block.EnsureRead();
+                    }
+                    catch (Exception e)
+                    {
+                        LogException(e, path, originalPath);
                         continue;
                     }
 
