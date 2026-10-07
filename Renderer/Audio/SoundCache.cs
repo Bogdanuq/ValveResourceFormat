@@ -258,7 +258,7 @@ public sealed class SoundCache : IDisposable
 
     private void DecodeSound(string fileName, CachedSound sound)
     {
-        using var resource = fileLoader.LoadFileCompiled(fileName);
+        using var resource = fileLoader.LoadFileCompiledOnDemand(fileName);
 
         if (resource?.DataBlock is not ResourceTypes.Sound soundData || soundData.StreamingDataSize == 0)
         {

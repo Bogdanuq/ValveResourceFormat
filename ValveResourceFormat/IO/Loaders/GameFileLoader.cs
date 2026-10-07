@@ -399,32 +399,49 @@ namespace ValveResourceFormat.IO
             {
                 FileName = file,
             };
-            Resource? resourceToReturn = null;
 
             try
             {
-                var foundFile = FindFile(file);
+                if (ReadFile(file, resource))
+                {
+                    var resourceToReturn = resource;
+                    resource = null;
+                    return resourceToReturn;
+                }
 
-                if (foundFile.PathOnDisk != null)
-                {
-                    resource.Read(foundFile.PathOnDisk);
-                    resourceToReturn = resource;
-                    resource = null;
-                }
-                else if (foundFile.PackageEntry != null)
-                {
-                    var stream = GetPackageEntryStream(foundFile.Package!, foundFile.PackageEntry);
-                    resource.Read(stream);
-                    resourceToReturn = resource;
-                    resource = null;
-                }
+                return null;
             }
             finally
             {
                 resource?.Dispose();
             }
+        }
 
-            return resourceToReturn;
+        /// <summary>
+        /// Finds a file and reads it into the given resource, which the caller disposes when this throws.
+        /// </summary>
+        /// <param name="file">Path to the resource file to read.</param>
+        /// <param name="resource">Resource to read the file into.</param>
+        /// <returns><c>false</c> if the file was not found.</returns>
+        protected bool ReadFile(string file, Resource resource)
+        {
+            ArgumentNullException.ThrowIfNull(resource);
+
+            var foundFile = FindFile(file);
+
+            if (foundFile.PathOnDisk != null)
+            {
+                resource.Read(foundFile.PathOnDisk);
+                return true;
+            }
+
+            if (foundFile.PackageEntry != null)
+            {
+                resource.Read(GetPackageEntryStream(foundFile.Package!, foundFile.PackageEntry));
+                return true;
+            }
+
+            return false;
         }
 
         private void HandleGameInfo(HashSet<string> folders, string gameRoot, string gameinfoPath)

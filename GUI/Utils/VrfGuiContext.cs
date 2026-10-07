@@ -64,7 +64,7 @@ namespace GUI.Utils
 
         private int Children;
         private bool WantsToBeDisposed;
-        private readonly ConcurrentDictionary<string, Resource> CachedResources = [];
+        private readonly ConcurrentDictionary<string, CachedResource> CachedResources = [];
         private readonly ConcurrentQueue<RendererContext> rendererContexts = [];
 
 #if DEBUG
@@ -192,6 +192,7 @@ namespace GUI.Utils
                     continue;
                 }
 
+                resource.IsShared = false;
                 resource.Dispose();
                 CachedResources.TryRemove(path, out _);
             }
@@ -365,19 +366,50 @@ namespace GUI.Utils
             file = file.Replace('\\', '/');
 
             // TODO: Might conflict where same file name is available in different paths
-            if (CachedResources.TryGetValue(file, out var resource) && resource.Reader != null)
+            if (CachedResources.TryGetValue(file, out var cachedResource))
             {
-                return resource;
+                return cachedResource;
             }
 
-            resource = base.LoadFile(file);
-
-            if (resource != null)
+            var resource = new CachedResource
             {
+                FileName = file,
+            };
+
+            try
+            {
+                if (!ReadFile(file, resource))
+                {
+                    return null;
+                }
+
+                resource.IsShared = true;
                 CachedResources[file] = resource;
-            }
 
-            return resource;
+                var resourceToReturn = resource;
+                resource = null;
+                return resourceToReturn;
+            }
+            finally
+            {
+                resource?.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// A resource handed out by the cache, which ignores disposal while it is shared.
+        /// </summary>
+        private sealed class CachedResource : Resource
+        {
+            public bool IsShared { get; set; }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (!IsShared)
+                {
+                    base.Dispose(disposing);
+                }
+            }
         }
 
         public override Resource? LoadFileCompiled(string file) => LoadFile(string.Concat(file, CompiledFileSuffix));
