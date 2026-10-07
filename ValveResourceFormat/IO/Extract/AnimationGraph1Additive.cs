@@ -31,7 +31,7 @@ namespace ValveResourceFormat.IO
                 return result;
             }
 
-            using var resource = fileLoader.LoadFileCompiled(graphName);
+            using var resource = fileLoader.LoadFileCompiledOnDemand(graphName);
             if (resource?.DataBlock is not BinaryKV3 graph)
             {
                 return result;

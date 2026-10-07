@@ -88,6 +88,11 @@ namespace ValveResourceFormat.ResourceTypes
         /// </summary>
         public KV3BinaryCompressionMethod SerializationCompressionMethod { get; set; } = KV3BinaryCompressionMethod.Uncompressed;
 
+        /// <summary>
+        /// Gets whether objects are read into list-backed collections, which take less memory than dictionary-backed ones but look up their keys linearly.
+        /// </summary>
+        private protected virtual bool ReadsListBackedObjects => false;
+
         private class Buffers
         {
             public ArraySegment<byte> Bytes1;
@@ -99,6 +104,7 @@ namespace ValveResourceFormat.ResourceTypes
         private class Context
         {
             public int Version;
+            public bool ListBackedObjects;
             public ArraySegment<byte> Types;
             public ArraySegment<byte> ObjectLengths;
             public ArraySegment<byte> BinaryBlobs;
@@ -216,6 +222,7 @@ namespace ValveResourceFormat.ResourceTypes
             var context = new Context
             {
                 Version = version,
+                ListBackedObjects = ReadsListBackedObjects,
             };
 
             var format = KV3IDLookup.GetByValue(new Guid(reader.ReadBytes(16)));
@@ -933,7 +940,7 @@ namespace ValveResourceFormat.ResourceTypes
                     var objectLength = context.Version >= 5
                         ? ReadLane<int>(ref context.ObjectLengths)
                         : ReadLane<int>(ref buffer.Bytes4);
-                    var newObject = KVObject.Collection(objectLength);
+                    var newObject = context.ListBackedObjects ? KVObject.ListCollection(objectLength) : KVObject.Collection(objectLength);
 
                     for (var i = 0; i < objectLength; i++)
                     {

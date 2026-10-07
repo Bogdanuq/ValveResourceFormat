@@ -47,7 +47,9 @@ namespace ValveResourceFormat.IO
 
             foreach (var animationFile in animArray)
             {
-                var animResource = fileLoader.LoadFileCompiled(animationFile);
+#pragma warning disable CA2000 // False positive, the using declaration disposes it
+                using var animResource = fileLoader.LoadFileCompiledOnDemand(animationFile);
+#pragma warning restore CA2000
 
                 if (animResource != null)
                 {

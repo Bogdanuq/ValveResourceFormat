@@ -102,6 +102,8 @@ namespace ValveResourceFormat.ResourceTypes.ModelAnimation2
         private TrackCompressionSetting[]? trackCompressionSettings;
         private AnimationFloatCurve[]? floatCurves;
 
+        private protected override bool ReadsListBackedObjects => true;
+
         /// <inheritdoc/>
         public override void Read(BinaryReader reader)
         {

@@ -20,10 +20,19 @@ public class NmClipExtract
     /// Initializes a new instance of the <see cref="NmClipExtract"/> class.
     /// </summary>
     public NmClipExtract(Resource resource, IFileLoader fileLoader)
+        : this(resource, resource.DataBlock as AnimationClip
+            ?? throw new InvalidDataException($"Resource DataBlock is not an {nameof(AnimationClip)}."), fileLoader)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="NmClipExtract"/> class for a clip already read from <paramref name="resource"/>,
+    /// which is only used for its file name and edit info.
+    /// </summary>
+    internal NmClipExtract(Resource resource, AnimationClip clip, IFileLoader fileLoader)
     {
         this.resource = resource;
-        clip = resource.DataBlock as AnimationClip
-            ?? throw new InvalidDataException($"Resource DataBlock is not an {nameof(AnimationClip)}.");
+        this.clip = clip;
         this.fileLoader = fileLoader;
     }
 

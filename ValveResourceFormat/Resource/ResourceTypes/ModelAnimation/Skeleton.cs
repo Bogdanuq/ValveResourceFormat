@@ -1,5 +1,6 @@
 using System.Linq;
 using ValveKeyValue;
+using ValveResourceFormat.IO;
 using ValveResourceFormat.Serialization.KeyValues;
 
 namespace ValveResourceFormat.ResourceTypes.ModelAnimation
@@ -80,9 +81,9 @@ namespace ValveResourceFormat.ResourceTypes.ModelAnimation
         /// Loads a compiled NM skeleton (.vnmskel) resource by name and builds a skeleton from it,
         /// or returns <see langword="null"/> when the resource cannot be loaded.
         /// </summary>
-        public static Skeleton? FromSkeletonResource(IO.IFileLoader fileLoader, string skeletonName)
+        public static Skeleton? FromSkeletonResource(IFileLoader fileLoader, string skeletonName)
         {
-            using var resource = fileLoader.LoadFileCompiled(skeletonName);
+            using var resource = fileLoader.LoadFileCompiledOnDemand(skeletonName);
             return resource?.DataBlock is BinaryKV3 skeletonData
                 ? FromSkeletonData(skeletonData.Data)
                 : null;

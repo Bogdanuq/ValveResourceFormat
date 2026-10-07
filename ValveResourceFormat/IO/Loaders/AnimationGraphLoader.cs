@@ -32,7 +32,14 @@ namespace ValveResourceFormat.IO
 
         private static void CollectClips(string graphName, IFileLoader fileLoader, HashSet<string> visited, List<string> clipNames)
         {
-            if (!visited.Add(graphName) || fileLoader.LoadFileCompiled(graphName)?.DataBlock is not BinaryKV3 graph)
+            if (!visited.Add(graphName))
+            {
+                return;
+            }
+
+            using var graphResource = fileLoader.LoadFileCompiledOnDemand(graphName);
+
+            if (graphResource?.DataBlock is not BinaryKV3 graph)
             {
                 return;
             }

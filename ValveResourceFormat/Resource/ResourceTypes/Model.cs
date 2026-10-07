@@ -439,7 +439,7 @@ namespace ValveResourceFormat.ResourceTypes
                     continue;
                 }
 
-                using var resource = fileLoader.LoadFileCompiled(modelName);
+                using var resource = fileLoader.LoadFileCompiledOnDemand(modelName);
                 if (resource?.DataBlock is not Model model)
                 {
                     continue;
@@ -479,7 +479,9 @@ namespace ValveResourceFormat.ResourceTypes
                     continue;
                 }
 
-                using var animGroup = fileLoader.LoadFileCompiled(animGroupPath);
+#pragma warning disable CA2000 // False positive, the using declaration disposes it
+                using var animGroup = fileLoader.LoadFileCompiledOnDemand(animGroupPath);
+#pragma warning restore CA2000
 
                 if (animGroup == default)
                 {
@@ -512,7 +514,9 @@ namespace ValveResourceFormat.ResourceTypes
             // Animation graph (AG2) clips are part of the model's animation set.
             foreach (var clipName in IO.AnimationGraphLoader.GetClipNames(this, fileLoader))
             {
-                if (fileLoader.LoadFileCompiled(clipName)?.DataBlock is ModelAnimation2.AnimationClip clip)
+                using var clipResource = fileLoader.LoadFileCompiledOnDemand(clipName);
+
+                if (clipResource?.DataBlock is ModelAnimation2.AnimationClip clip)
                 {
                     animations.Add(new ClipAnimation(clip));
                 }

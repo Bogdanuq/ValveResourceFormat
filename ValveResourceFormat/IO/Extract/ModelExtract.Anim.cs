@@ -108,7 +108,16 @@ partial class ModelExtract
                 continue;
             }
 
-            var clipContent = new NmClipExtract(clip.Resource, fileLoader).ToContentFile();
+#pragma warning disable CA2000 // False positive, the using declaration disposes it
+            using var clipResource = fileLoader.LoadFileCompiledOnDemand(animation.Name);
+#pragma warning restore CA2000
+
+            if (clipResource == null)
+            {
+                continue;
+            }
+
+            var clipContent = new NmClipExtract(clipResource, clip, fileLoader).ToContentFile();
             clipContent.FileName = animation.Name;
             clipContent.KeepFullPath = true;
             vmdl.AdditionalFiles.Add(clipContent);
