@@ -840,6 +840,30 @@ internal abstract partial class GLBaseControl : IDisposable, IMessageFilter
     /// <summary>Wipes what an undersized render leaves behind in the window. Not compiled in otherwise.</summary>
     partial void ClearWindowOutsideViewport();
 
+    /// <summary>How far down the window an undersized render starts, as it sits in the bottom left. Not compiled in otherwise.</summary>
+    partial void GetRenderAreaTop(ref int top);
+
+    /// <summary>The window row the render area starts at, which mouse coordinates must be offset by.</summary>
+    protected int RenderAreaTop
+    {
+        get
+        {
+            var top = 0;
+            GetRenderAreaTop(ref top);
+            return top;
+        }
+    }
+
+    /// <summary>Maps a point in the window to the render area, returning false when it falls outside of it.</summary>
+    protected bool TryWindowToRenderArea(Point windowPoint, out Point renderPoint)
+    {
+        renderPoint = windowPoint with { Y = windowPoint.Y - RenderAreaTop };
+
+        return GLDefaultFramebuffer is { } framebuffer
+            && renderPoint.X >= 0 && renderPoint.Y >= 0
+            && renderPoint.X < framebuffer.Width && renderPoint.Y < framebuffer.Height;
+    }
+
     protected virtual void OnSizeChanged(object? sender, EventArgs e)
     {
         ShouldResize = GLControl is not null && GLControl.Width > 0 && GLControl.Height > 0;

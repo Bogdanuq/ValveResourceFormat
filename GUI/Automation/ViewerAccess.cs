@@ -43,6 +43,16 @@ namespace GUI.Types.GLViewers
             }
         }
 
+        partial void GetRenderAreaTop(ref int top)
+        {
+            if (viewportOverride != null
+                && GLNativeWindow is { } window
+                && GLDefaultFramebuffer is { } windowFramebuffer)
+            {
+                top = window.Size.Y - windowFramebuffer.Height;
+            }
+        }
+
         /// <summary>
         /// Renders at an exact size regardless of the window, so two runs can be compared pixel for
         /// pixel. Capped to the window, because the frame is read back out of the window's own

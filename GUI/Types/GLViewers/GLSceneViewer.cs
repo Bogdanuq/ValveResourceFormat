@@ -320,9 +320,9 @@ namespace GUI.Types.GLViewers
                 return;
             }
 
-            if (!MouseDragged || GrabbedMouse)
+            if ((!MouseDragged || GrabbedMouse) && TryWindowToRenderArea(InitialMousePosition, out var pickPosition))
             {
-                Picker?.RequestNextFrame(InitialMousePosition.X, InitialMousePosition.Y, PickingIntent.Select);
+                Picker?.RequestNextFrame(pickPosition.X, pickPosition.Y, PickingIntent.Select);
             }
         }
 
@@ -335,14 +335,14 @@ namespace GUI.Types.GLViewers
                 return;
             }
 
-            if (e.Button == MouseButtons.Left)
+            if (e.Button == MouseButtons.Left && TryWindowToRenderArea(e.Location, out var pickPosition))
             {
                 if (e.Clicks == 2)
                 {
                     var intent = Control.ModifierKeys.HasFlag(Keys.Control)
                         ? PickingIntent.Open
                         : PickingIntent.Details;
-                    Picker?.RequestNextFrame(e.X, e.Y, intent);
+                    Picker?.RequestNextFrame(pickPosition.X, pickPosition.Y, intent);
                 }
             }
         }

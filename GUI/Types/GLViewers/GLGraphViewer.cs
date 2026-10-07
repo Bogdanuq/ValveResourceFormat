@@ -1104,7 +1104,7 @@ namespace GUI.Types.GLViewers
             var (scale, position) = GetCurrentPositionAndScale();
 
             var canvasX = (screenPoint.X + position.X) / scale;
-            var canvasY = (screenPoint.Y + position.Y) / scale;
+            var canvasY = (screenPoint.Y - RenderAreaTop + position.Y) / scale;
 
             return new SKPoint(canvasX + graphBounds.Left, canvasY + graphBounds.Top);
         }
