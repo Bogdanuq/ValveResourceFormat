@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Threading;
 using ValveResourceFormat.Blocks;
 using ValveResourceFormat.Blocks.ResourceEditInfoStructs;
 using ValveResourceFormat.CompiledShader;
@@ -21,6 +22,9 @@ namespace ValveResourceFormat
 
         private FileStream? FileStream;
 
+        // Serializes reads through Reader after Read returns: on-demand blocks and lazily decoded buffers
+        internal Lock ReaderLock { get; } = new();
+
         /// <summary>
         /// Gets the binary reader. USE AT YOUR OWN RISK!
         /// It is exposed publicly to ease reading the same file.
@@ -32,6 +36,16 @@ namespace ValveResourceFormat
         /// Gets or sets the file name this resource was parsed from.
         /// </summary>
         public string? FileName { get; set; }
+
+        /// <summary>
+        /// Gets or sets whether <see cref="Read(Stream, bool)"/> leaves the blocks other blocks do not depend on
+        /// unparsed. Such blocks parse on first access through <see cref="GetBlockByType"/>, <see cref="GetBlockByIndex"/>,
+        /// <see cref="DataBlock"/> or <see cref="Block.EnsureRead"/>, which requires the input stream to still be open
+        /// and the resource undisposed, and can throw there instead of in <see cref="Read(Stream, bool)"/>.
+        /// The DATA block of <see cref="ResourceType.VData"/> resources is always parsed, as it is specialized by its contents.
+        /// The edit info parses on first use of <see cref="EditInfo"/>, unless it is needed to determine <see cref="ResourceType"/>.
+        /// </summary>
+        public bool ReadBlocksOnDemand { get; set; }
 
         /// <summary>
         /// Gets the resource size.
@@ -62,7 +76,16 @@ namespace ValveResourceFormat
         /// <summary>
         /// Gets the <see cref="ResourceEditInfo"/> block.
         /// </summary>
-        public ResourceEditInfo? EditInfo { get; private set; }
+        public ResourceEditInfo? EditInfo
+        {
+            get
+            {
+                editInfo?.EnsureRead();
+                return editInfo;
+            }
+        }
+
+        private ResourceEditInfo? editInfo;
 
         /// <summary>
         /// Gets the <see cref="ResourceExtRefList"/> block.
@@ -85,11 +108,6 @@ namespace ValveResourceFormat
             get
             {
                 var size = FileSize;
-
-                if (DataBlock == null)
-                {
-                    return size;
-                }
 
                 if (ResourceType == ResourceType.Sound && DataBlock is Sound dataSound)
                 {
@@ -250,21 +268,25 @@ namespace ValveResourceFormat
 
                 Blocks.Add(block);
 
-                if (IsReadEagerly(block.Type))
+                if (block is ResourceEditInfo && ReadBlocksOnDemand && ResourceType != ResourceType.Unknown)
+                {
+                    block.MarkDeferred();
+                }
+                else if (IsReadEagerly(block.Type))
                 {
                     block.Read(Reader);
                 }
 
-                if (block is ResourceEditInfo editInfo)
+                if (block is ResourceEditInfo blockEditInfo)
                 {
-                    EditInfo = editInfo;
+                    editInfo = blockEditInfo;
 
                     // Try to determine resource type by looking at the compiler identifiers
                     // This must be done right after reading EditInfo because future DATA block
                     // will depend on knowing the resource type to construct the correct block in ConstructResourceType()
                     if (ResourceType == ResourceType.Unknown)
                     {
-                        foreach (var specialDep in EditInfo.SpecialDependencies)
+                        foreach (var specialDep in editInfo.SpecialDependencies)
                         {
                             ResourceType = DetermineResourceTypeByCompilerIdentifier(specialDep);
 
@@ -275,9 +297,9 @@ namespace ValveResourceFormat
                         }
 
                         // Try to determine resource type by looking at the input dependency if there is only one
-                        if (ResourceType == ResourceType.Unknown && EditInfo.InputDependencies.Count == 1)
+                        if (ResourceType == ResourceType.Unknown && editInfo.InputDependencies.Count == 1)
                         {
-                            ResourceType = ResourceTypeExtensions.DetermineByFileExtension(Path.GetExtension(EditInfo.InputDependencies[0].ContentRelativeFilename));
+                            ResourceType = ResourceTypeExtensions.DetermineByFileExtension(Path.GetExtension(editInfo.InputDependencies[0].ContentRelativeFilename));
                         }
                     }
                 }
@@ -289,7 +311,14 @@ namespace ValveResourceFormat
             {
                 if (!IsReadEagerly(block.Type))
                 {
-                    block.Read(Reader);
+                    if (ReadBlocksOnDemand && !(ResourceType == ResourceType.VData && block.Type == BlockType.DATA))
+                    {
+                        block.MarkDeferred();
+                    }
+                    else
+                    {
+                        block.Read(Reader);
+                    }
                 }
             }
 
@@ -414,7 +443,9 @@ namespace ValveResourceFormat
             ArgumentOutOfRangeException.ThrowIfNegative(index);
             ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, Blocks.Count);
 
-            return Blocks[index];
+            var block = Blocks[index];
+            block.EnsureRead();
+            return block;
         }
 
         /// <summary>
@@ -428,11 +459,24 @@ namespace ValveResourceFormat
             {
                 if (block.Type == type)
                 {
+                    block.EnsureRead();
                     return block;
                 }
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Parses every block a <see cref="ReadBlocksOnDemand"/> read left unparsed, for consumers that
+        /// iterate <see cref="Blocks"/> directly.
+        /// </summary>
+        public void EnsureAllBlocksRead()
+        {
+            foreach (var block in Blocks)
+            {
+                block.EnsureRead();
+            }
         }
 
         /// <summary>

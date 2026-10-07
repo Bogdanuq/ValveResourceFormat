@@ -23,8 +23,13 @@ public abstract class RawBinary : Block
 
         // The dumbest implementation.
         var data = new byte[Size];
-        Resource.Reader.BaseStream.Position = Offset;
-        Resource.Reader.Read(data);
+
+        lock (Resource.ReaderLock)
+        {
+            Resource.Reader.BaseStream.Position = Offset;
+            Resource.Reader.Read(data);
+        }
+
         stream.Write(data);
     }
 
@@ -34,8 +39,12 @@ public abstract class RawBinary : Block
         ArgumentNullException.ThrowIfNull(Resource?.Reader);
 
         var data = new byte[Size];
-        Resource.Reader.BaseStream.Position = Offset;
-        Resource.Reader.Read(data);
+
+        lock (Resource.ReaderLock)
+        {
+            Resource.Reader.BaseStream.Position = Offset;
+            Resource.Reader.Read(data);
+        }
 
         for (var i = 0; i < data.Length; i += 16)
         {

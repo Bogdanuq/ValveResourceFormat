@@ -2311,6 +2311,8 @@ namespace CLI
             using var stringWriter = new NullStringWriter();
             using var writer = new IndentedTextWriter(stringWriter);
 
+            resource.EnsureAllBlocksRead();
+
             foreach (var block in resource.Blocks)
             {
                 block.WriteText(writer);

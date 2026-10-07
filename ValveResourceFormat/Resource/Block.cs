@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.ExceptionServices;
 
 namespace ValveResourceFormat
 {
@@ -29,6 +30,65 @@ namespace ValveResourceFormat
         /// Can technically be <c>null</c> if constructed outside of a <see cref="Resource"/>.
         /// </remarks>
         public required Resource Resource { get; set; }
+
+        private volatile bool deferred;
+        private bool materializing;
+        private ExceptionDispatchInfo? readFailure;
+
+        /// <summary>
+        /// Gets whether the block data has been parsed. Only false for blocks a
+        /// <see cref="Resource.ReadBlocksOnDemand"/> read left unparsed; call
+        /// <see cref="EnsureRead"/> to parse such a block.
+        /// </summary>
+        public bool IsRead => !deferred;
+
+        internal void MarkDeferred() => deferred = true;
+
+        /// <summary>
+        /// Parses the block data if a <see cref="Resource.ReadBlocksOnDemand"/> read left it unparsed.
+        /// Safe to call from multiple threads and a no-op once the block is parsed.
+        /// The resource's input stream must still be open. A block that fails to parse
+        /// throws the same exception on every later call.
+        /// </summary>
+        public void EnsureRead()
+        {
+            if (!deferred)
+            {
+                return;
+            }
+
+            lock (Resource.ReaderLock)
+            {
+                if (!deferred || materializing)
+                {
+                    return;
+                }
+
+                readFailure?.Throw();
+
+                var reader = Resource.Reader
+                    ?? throw new InvalidOperationException($"Cannot materialize deferred block {Type} because the resource's reader is no longer available.");
+
+                var position = reader.BaseStream.Position;
+                materializing = true;
+
+                try
+                {
+                    Read(reader);
+                    deferred = false;
+                }
+                catch (Exception e)
+                {
+                    readFailure = ExceptionDispatchInfo.Capture(e);
+                    throw;
+                }
+                finally
+                {
+                    materializing = false;
+                    reader.BaseStream.Position = position;
+                }
+            }
+        }
 
         /// <summary>
         /// Reads the block data from a binary reader.

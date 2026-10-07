@@ -200,7 +200,7 @@ namespace ValveResourceFormat.Renderer.World
                     var resource = RendererContext.FileLoader.LoadFileCompiled(resourceName);
                     if (resource is { DataBlock: Model model })
                     {
-                        lock (resource)
+                        lock (resource.ReaderLock)
                         {
                             foreach (var mesh in model.GetEmbeddedMeshes())
                             {
