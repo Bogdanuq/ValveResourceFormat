@@ -455,6 +455,12 @@ internal sealed partial class McpTools
             return McpToolResult.Error($"{viewer!.GetType().Name} tabs are captured at the image's own size whatever the viewport, so set_viewport does not apply to them.");
         }
 
+        // The viewport is capped to the window, which is empty while minimized
+        if (await CheckCanRender(cancellationToken).ConfigureAwait(false) is { } minimizedError)
+        {
+            return McpToolResult.Error(minimizedError);
+        }
+
         if (width == null || height == null)
         {
             viewer!.RestoreViewportSize();

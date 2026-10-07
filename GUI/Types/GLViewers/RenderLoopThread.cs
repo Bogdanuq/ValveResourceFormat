@@ -211,6 +211,14 @@ namespace GUI.Types.GLViewers
                 return null;
             }
 
+            // A minimized window has no area to draw into, not even for automation. A repaint after
+            // it is restored puts the control back on the loop.
+            if (!control.HasDrawableArea)
+            {
+                UnsetCurrentGLControl(control);
+                return null;
+            }
+
             var isPaused = !renderSignal.IsSet;
             var keepRendering = false;
 

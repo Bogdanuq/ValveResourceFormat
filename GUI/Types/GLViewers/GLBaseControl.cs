@@ -829,6 +829,9 @@ internal abstract partial class GLBaseControl : IDisposable, IMessageFilter
 
     protected bool ShouldResize;
 
+    /// <summary>Whether the window has any area to draw into, which it does not while minimized.</summary>
+    public bool HasDrawableArea => GLNativeWindow is { } window && window.Size.X > 0 && window.Size.Y > 0;
+
     protected bool SkipBufferSwap;
 
     /// <summary>Lets automation render at a size of its own instead of the window's. Not compiled in otherwise.</summary>
@@ -1106,6 +1109,13 @@ internal abstract partial class GLBaseControl : IDisposable, IMessageFilter
         {
             Log.Debug(nameof(GLBaseControl), "Attempted to draw onto destroyed GL Native Window.");
             RenderLoopThread.UnsetCurrentGLControl(this);
+            return false;
+        }
+
+        // A zero sized viewport makes the camera projection singular, so keep any pending resize
+        // until there is something to draw into
+        if (!HasDrawableArea)
+        {
             return false;
         }
 

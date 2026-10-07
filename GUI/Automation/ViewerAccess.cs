@@ -58,6 +58,12 @@ namespace GUI.Types.GLViewers
                 height = Math.Min(height, GLNativeWindow.Size.Y);
             }
 
+            // Minimized, so there is nothing to render into; the caller reports that
+            if (width <= 0 || height <= 0)
+            {
+                return;
+            }
+
             viewportOverride = (width, height);
 
             ShouldResize = false;
