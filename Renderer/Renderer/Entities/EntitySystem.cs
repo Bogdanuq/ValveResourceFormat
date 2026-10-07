@@ -130,6 +130,9 @@ public sealed class EntitySystem
     private readonly List<BaseEntity> entities = [];
     private readonly List<BaseEntity> parented = [];
 
+    private readonly Dictionary<string, List<BaseEntity>> entitiesByName = [];
+    private static readonly List<BaseEntity> NoEntities = [];
+
     private readonly List<QueuedInput> inputQueue = [];
     private readonly Dictionary<EntityLump.Connection, int> firedCounts = [];
     private readonly HashSet<BaseEntity> playerImpacts = [];
@@ -214,6 +217,19 @@ public sealed class EntitySystem
         entity.Owner ??= World;
 
         entities.Add(entity);
+
+        if (!string.IsNullOrEmpty(entity.TargetName))
+        {
+            var key = NameKey(entity.TargetName);
+
+            if (!entitiesByName.TryGetValue(key, out var named))
+            {
+                named = [];
+                entitiesByName.Add(key, named);
+            }
+
+            named.Add(entity);
+        }
     }
 
     /// <summary>
@@ -488,6 +504,7 @@ public sealed class EntitySystem
         }
 
         entities.Clear();
+        entitiesByName.Clear();
         parented.Clear();
         pendingSpawns.Clear();
         PhysicsWorld.Clear();
@@ -600,6 +617,12 @@ public sealed class EntitySystem
 
             entities.RemoveAll(static entity => entity.IsRemoved);
             parented.RemoveAll(static entity => entity.IsRemoved);
+
+            foreach (var named in entitiesByName.Values)
+            {
+                named.RemoveAll(static entity => entity.IsRemoved);
+            }
+
             hasRemovedEntities = false;
         }
 
@@ -845,7 +868,7 @@ public sealed class EntitySystem
     /// </summary>
     public IEnumerable<BaseEntity> FindAllByTargetName(string pattern)
     {
-        foreach (var entity in entities)
+        foreach (var entity in NameCandidates(pattern))
         {
             if (Matches(entity, pattern))
             {
@@ -873,7 +896,7 @@ public sealed class EntitySystem
     {
         ArgumentNullException.ThrowIfNull(scene);
 
-        foreach (var entity in entities)
+        foreach (var entity in NameCandidates(pattern))
         {
             if (entity.Scene.WorldGroup == scene.WorldGroup && Matches(entity, pattern))
             {
@@ -886,6 +909,30 @@ public sealed class EntitySystem
         => !entity.IsRemoved
         && entity.TargetName != null
         && EntityLump.EntityNameMatches(pattern, entity.TargetName);
+
+    /// <summary>
+    /// The entities a pattern can match: every entity for a wildcard pattern, otherwise only the ones with
+    /// that name. Candidates still have to pass <see cref="Matches"/>.
+    /// </summary>
+    private List<BaseEntity> NameCandidates(string pattern)
+    {
+        if (pattern.AsSpan().IndexOfAny('*', '?') >= 0)
+        {
+            return entities;
+        }
+
+        return entitiesByName.TryGetValue(NameKey(pattern), out var named) ? named : NoEntities;
+    }
+
+    /// <summary>Uppercases each character on its own, the way names compare when they hold no wildcards.</summary>
+    private static string NameKey(string name)
+        => string.Create(name.Length, name, static (key, name) =>
+        {
+            for (var i = 0; i < key.Length; i++)
+            {
+                key[i] = char.ToUpperInvariant(name[i]);
+            }
+        });
 
     /// <summary>
     /// Delivers everything the clock has reached, and everything those deliveries queue for now.
@@ -1027,13 +1074,15 @@ public sealed class EntitySystem
 
         var matchedName = false;
 
-        foreach (var entity in entities)
+        if (byName)
         {
-            if (byName && !entity.IsRemoved && entity.TargetName != null
-                && EntityLump.EntityNameMatches(target.Name, entity.TargetName))
+            foreach (var entity in NameCandidates(target.Name))
             {
-                matchedName = true;
-                yield return entity;
+                if (Matches(entity, target.Name))
+                {
+                    matchedName = true;
+                    yield return entity;
+                }
             }
         }
 
