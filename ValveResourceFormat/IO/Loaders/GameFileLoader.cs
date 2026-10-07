@@ -1,9 +1,11 @@
 //#define DEBUG_FILE_LOAD
 
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Enumeration;
+using System.IO.MemoryMappedFiles;
 using System.Threading;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -48,6 +50,9 @@ namespace ValveResourceFormat.IO
             ".sbproj",
         ];
 
+        private const ushort DirectoryArchiveIndex = 0x7FFF;
+        private const int SmallEntryMaxLength = 4096;
+
         private readonly Dictionary<string, ShaderCollection> CachedShaders = [];
         private readonly Lock CachedShadersLock = new();
         private readonly HashSet<string> CurrentGameSearchPaths = [];
@@ -67,6 +72,8 @@ namespace ValveResourceFormat.IO
         private volatile bool AddonDependenciesPending;
         private readonly Lock AddonDependenciesLock = new();
         private bool StoredSurfacePropertyStringTokens;
+        private readonly ConcurrentDictionary<(Package Package, ushort ArchiveIndex), MemoryMappedFile> MappedArchives = [];
+        private readonly Lock MappedArchivesLock = new();
 
         /// <summary>
         /// Gets or sets the current package being processed.
@@ -129,6 +136,16 @@ namespace ValveResourceFormat.IO
 
                 CurrentAddonPackages.Clear();
                 CurrentGamePackages.Clear();
+
+                lock (MappedArchivesLock)
+                {
+                    foreach (var archive in MappedArchives.Values)
+                    {
+                        archive.Dispose();
+                    }
+
+                    MappedArchives.Clear();
+                }
 
                 lock (CachedShadersLock)
                 {
@@ -304,7 +321,7 @@ namespace ValveResourceFormat.IO
                     }
                     else if (foundFile.PackageEntry != null)
                     {
-                        var stream = GetPackageEntryStream(foundFile.Package!, foundFile.PackageEntry);
+                        var stream = OpenPackageEntry(foundFile.Package!, foundFile.PackageEntry);
                         shaderFile.Read(fileName, stream);
                     }
 
@@ -381,7 +398,7 @@ namespace ValveResourceFormat.IO
             }
             else if (foundFile.PackageEntry != null)
             {
-                return GetPackageEntryStream(foundFile.Package!, foundFile.PackageEntry);
+                return OpenPackageEntry(foundFile.Package!, foundFile.PackageEntry);
             }
             else
             {
@@ -437,7 +454,18 @@ namespace ValveResourceFormat.IO
 
             if (foundFile.PackageEntry != null)
             {
-                resource.Read(GetPackageEntryStream(foundFile.Package!, foundFile.PackageEntry));
+                var stream = OpenPackageEntry(foundFile.Package!, foundFile.PackageEntry);
+
+                try
+                {
+                    resource.Read(stream);
+                }
+                catch
+                {
+                    stream.Dispose();
+                    throw;
+                }
+
                 return true;
             }
 
@@ -577,7 +605,23 @@ namespace ValveResourceFormat.IO
         /// </summary>
         public bool RemovePackageFromSearch(Package package)
         {
-            return CurrentAddonPackages.Remove(package) || CurrentGamePackages.Remove(package);
+            var removed = CurrentAddonPackages.Remove(package) || CurrentGamePackages.Remove(package);
+
+            if (removed)
+            {
+                lock (MappedArchivesLock)
+                {
+                    foreach (var key in MappedArchives.Keys)
+                    {
+                        if (key.Package == package && MappedArchives.TryRemove(key, out var archive))
+                        {
+                            archive.Dispose();
+                        }
+                    }
+                }
+            }
+
+            return removed;
         }
 
         private Package ReadPackage(string searchPath)
@@ -1140,6 +1184,59 @@ namespace ValveResourceFormat.IO
         }
 
         /// <summary>
+        /// Opens a package entry stored in one of the package's archive files without locking the package, so
+        /// entries can be opened from many threads at once. Each archive file is mapped once per loader.
+        /// </summary>
+        private Stream OpenPackageEntry(Package package, PackageEntry entry)
+        {
+            if (entry.ArchiveIndex == DirectoryArchiveIndex || entry.SmallData.Length > 0)
+            {
+                return GetPackageEntryStream(package, entry);
+            }
+
+            if (entry.Length == 0)
+            {
+                return new MemoryStream([]);
+            }
+
+            var archive = GetMappedArchive(package, entry.ArchiveIndex);
+
+            if (entry.Length > SmallEntryMaxLength)
+            {
+                return new MappedViewStream(archive.CreateViewStream(entry.Offset, entry.Length, MemoryMappedFileAccess.Read));
+            }
+
+            var data = new byte[entry.Length];
+
+            using (var view = archive.CreateViewAccessor(entry.Offset, entry.Length, MemoryMappedFileAccess.Read))
+            {
+                view.ReadArray(0, data, 0, data.Length);
+            }
+
+            return new MemoryStream(data);
+        }
+
+        private MemoryMappedFile GetMappedArchive(Package package, ushort archiveIndex)
+        {
+            if (MappedArchives.TryGetValue((package, archiveIndex), out var archive))
+            {
+                return archive;
+            }
+
+            lock (MappedArchivesLock)
+            {
+                if (!MappedArchives.TryGetValue((package, archiveIndex), out archive))
+                {
+                    var path = $"{package.FileName}_{archiveIndex:D3}.vpk";
+                    archive = MemoryMappedFile.CreateFromFile(path, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
+                    MappedArchives[(package, archiveIndex)] = archive;
+                }
+
+                return archive;
+            }
+        }
+
+        /// <summary>
         /// Gets a stream for reading a package entry.
         /// </summary>
         /// <remarks>
@@ -1147,10 +1244,14 @@ namespace ValveResourceFormat.IO
         /// </remarks>
         public static Stream GetPackageEntryStream(Package package, PackageEntry entry)
         {
+            Stream stream;
+
             lock (package)
             {
-                return package.GetMemoryMappedStreamIfPossible(entry);
+                stream = package.GetMemoryMappedStreamIfPossible(entry);
             }
+
+            return stream is MemoryMappedViewStream view ? new MappedViewStream(view) : stream;
         }
     }
 }
